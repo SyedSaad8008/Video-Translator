@@ -1,0 +1,24 @@
+# Built Application / Gradle
+*.iml
+.gradle
+/build
+/app/build
+.kotlin
+
+# Local configuration file (sdk.dir, etc.)
+/local.properties
+local.properties
+
+# Android Studio / IntelliJ project files
+.idea/
+.DS_Store
+/captures
+.externalNativeBuild
+.cxx
+
+# Temporary WAV / Media / Export files
+*.wav
+*.raw
+*.mp4.pcm
+*.png
+vosk_model/
