@@ -11,6 +11,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import com.example.videotranslator.audio.AudioExtractor
 import com.example.videotranslator.audio.GenderDetector
 import com.example.videotranslator.audio.InstrumentalPlayer
+import com.example.videotranslator.audio.NoiseSuppressor
 import com.example.videotranslator.audio.SegmentAudioPlayer
 import com.example.videotranslator.cache.SegmentCache
 import com.example.videotranslator.model.Gender
@@ -45,6 +46,7 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
     // ── Dependencies ──────────────────────────────────────────────────────────
     private val cache              = SegmentCache(application)
     private val audioExtractor     = AudioExtractor(application)
+    private val noiseSuppressor    = NoiseSuppressor()
     private val genderDetector     = GenderDetector()
     private val voskRecognizer     = VoskSpeechRecognizer(application)
     private val translationManager = TranslationManager()
@@ -170,10 +172,29 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
     // ── Pipeline ──────────────────────────────────────────────────────────────
     private suspend fun runPipeline(uri: Uri) {
+        val pipelineStart = System.currentTimeMillis()
         try {
-            // Force clean pipeline run for diagnostic evaluation
-            cache.clearFor(uri)
+            // Check cache
+            if (cache.isCached(uri)) {
+                cache.load(uri)?.let { cached ->
+                    val isValidCache = cached.isNotEmpty() && cached.all { seg ->
+                        seg.englishAudioPath.isNotBlank() && File(seg.englishAudioPath).exists() &&
+                        seg.teluguAudioPath.isNotBlank() && File(seg.teluguAudioPath).exists()
+                    }
 
+                    if (isValidCache) {
+                        Log.d(TAG, "Valid pre-rendered segment cache loaded: ${cached.size} segments")
+                        loadInstrumentalIfAvailable(uri)
+                        _processingState.value = ProcessingState.Ready
+                        startTtsPolling()
+                        return
+                    } else {
+                        cache.clearFor(uri)
+                    }
+                }
+            }
+
+            // ── 1. Wait for pre-warm ──────────────────────────────────
             _processingState.value = ProcessingState.Loading("Initializing AI models…", 0.05f)
             prewarmJob?.join()
 
@@ -182,18 +203,30 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
             val monoFile         = cache.pcmFileFor(uri)
             val instrumentalFile = cache.instrumentalFileFor(uri)
 
-            val result = audioExtractor.extractToFiles(uri, monoFile, instrumentalFile)
+            val result = if (monoFile.exists()) {
+                val mono  = audioExtractor.loadMonoFromCache(monoFile)
+                val instr = if (instrumentalFile.exists())
+                    audioExtractor.loadInstrumentalFromCache(instrumentalFile) else null
+                AudioExtractor.ExtractionResult(mono, instr)
+            } else {
+                audioExtractor.extractToFiles(uri, monoFile, instrumentalFile)
+            }
+
             if (result.instrumental != null) instrumental.loadFromFile(instrumentalFile)
 
-            // ── 2b. Global Voice Gender Detection (Baseline) ──────────────
+            // ── 2b. DSP Spectral Subtraction Noise Suppression ───────────
+            _processingState.value = ProcessingState.Loading("Applying DSP spectral noise suppression…", 0.22f)
+            val cleanedMono = noiseSuppressor.suppressNoise(result.mono)
+
+            // ── 2c. Global Voice Gender Detection (Baseline) ──────────────
             _processingState.value = ProcessingState.Loading("Analyzing global audio pitch…", 0.28f)
-            val globalGenderResult = genderDetector.detectGender(result.mono)
+            val globalGenderResult = genderDetector.detectGender(cleanedMono)
             _detectedGender.value = globalGenderResult.gender
             Log.d(TAG, "Global Audio Gender Baseline: ${globalGenderResult.gender} (Median F0 = ${"%.1f".format(globalGenderResult.medianF0)} Hz)")
 
-            // ── 3. Transcribe (Vosk) ───────────────────────────────────
-            _processingState.value = ProcessingState.Loading("Transcribing Hindi speech…", 0.42f)
-            val rawSegments = voskRecognizer.recognise(result.mono)
+            // ── 3. Transcribe (Vosk) on Cleaned Audio ─────────────────────
+            _processingState.value = ProcessingState.Loading("Transcribing Hindi speech (High-Precision STT)…", 0.42f)
+            val rawSegments = voskRecognizer.recognise(cleanedMono)
             Log.d(TAG, "Vosk recognized ${rawSegments.size} Hindi segments")
 
             // ── 4. Download ML Kit translation models ─────────────────
@@ -219,15 +252,15 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
                     progressStep
                 )
 
-                // Extract specific PCM audio slice for this segment
-                val startSample = ((seg.startMs * 16000) / 1000).toInt().coerceIn(0, result.mono.size)
-                val endSample   = ((seg.endMs * 16000) / 1000).toInt().coerceIn(startSample, result.mono.size)
-                val segPcm      = if (endSample > startSample) result.mono.copyOfRange(startSample, endSample) else ShortArray(0)
+                // Extract specific PCM audio slice for this segment from cleanedMono
+                val startSample = ((seg.startMs * 16000) / 1000).toInt().coerceIn(0, cleanedMono.size)
+                val endSample   = ((seg.endMs * 16000) / 1000).toInt().coerceIn(startSample, cleanedMono.size)
+                val segPcm      = if (endSample > startSample) cleanedMono.copyOfRange(startSample, endSample) else ShortArray(0)
 
-                // Detect gender specifically for this sentence segment (fallback to runningGender if insufficient frames)
+                // Detect gender specifically for this sentence segment
                 val segGenderRes = genderDetector.detectGender(segPcm, fallbackGender = runningGender)
                 val segmentGender = segGenderRes.gender
-                runningGender = segmentGender // Carry over for short/unvoiced segments
+                runningGender = segmentGender
 
                 Log.d(TAG, "SEGMENT GENDER LOG [$idx] (${seg.startMs}ms -> ${seg.endMs}ms):\n" +
                         "   Voiced Frames: ${segGenderRes.totalVoicedFrames}\n" +
@@ -267,6 +300,12 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
             _processingState.value = ProcessingState.Loading("Saving cached audio…", 0.98f)
             cache.save(uri, finalProcessedSegments)
             _processingState.value = ProcessingState.Ready
+
+            val totalPipelineMs = System.currentTimeMillis() - pipelineStart
+            Log.d(TAG, "================ TOTAL PIPELINE EXECUTION TIME ================")
+            Log.d(TAG, "Completed full transcription, DSP noise reduction, translation, and TTS pre-rendering in ${"%.2f".format(totalPipelineMs / 1000.0)}s (Budget: 90.0s)")
+            Log.d(TAG, "================================================================")
+
             startTtsPolling()
 
         } catch (e: CancellationException) {
