@@ -39,6 +39,7 @@ class TtsManager(private val context: Context) {
             ready = status == TextToSpeech.SUCCESS
             if (ready) {
                 Log.d(TAG, "TTS Engine initialized successfully")
+                logAllDeviceVoices()
             } else {
                 Log.e(TAG, "TTS Engine initialization failed with status=$status")
             }
@@ -47,8 +48,33 @@ class TtsManager(private val context: Context) {
     }
 
     /**
+     * Enumerate every voice on the device for diagnostic reporting.
+     */
+    fun logAllDeviceVoices() {
+        val ttsEngine = tts ?: return
+        try {
+            val allVoices = ttsEngine.voices ?: emptySet()
+            Log.d(TAG, "================ ALL DEVICE TTS VOICES (${allVoices.size} total) ================")
+            for (v in allVoices) {
+                Log.d(
+                    TAG,
+                    "VOICE: name='${v.name}', locale='${v.locale}', quality=${v.quality}, " +
+                            "networkReq=${v.isNetworkConnectionRequired}, features=${v.features}"
+                )
+            }
+            Log.d(TAG, "==================================================================")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error enumerating device voices: ${e.message}", e)
+        }
+    }
+
+    /**
      * Selects a gender-matched voice for [language] and [gender].
-     * Uses a verified lookup table for Google TTS engine, with dynamic feature fallback.
+     * Uses a verified lookup table for Google TTS engine:
+     *  - English Male:   en-us-x-iom-network, en-us-x-iom-local, en-us-x-tpf-network, en-us-x-tpd-network
+     *  - English Female: en-us-x-iob-network, en-us-x-iob-local, en-us-x-tpc-network, en-us-x-sfg-network
+     *  - Telugu Male:    te-in-x-teg-network, te-in-x-teg-local
+     *  - Telugu Female:  te-in-x-tee-network, te-in-x-tee-local
      */
     fun selectVoiceForGender(language: Language, gender: Gender) {
         val ttsEngine = tts ?: return
@@ -83,19 +109,36 @@ class TtsManager(private val context: Context) {
             emptyList()
         }
 
-        Log.d(TAG, "Found ${availableVoices.size} candidate voices for ${targetLocale.language}")
+        Log.d(TAG, "Found ${availableVoices.size} candidate voices for locale '${targetLocale}' (${language}):")
+        for (v in availableVoices) {
+            Log.d(TAG, "   CANDIDATE: name='${v.name}', locale='${v.locale}', features=${v.features}")
+        }
 
         // 1. Verified Google TTS Voice Lookup Table
         val preferredVoiceNames = when (language) {
             Language.ENGLISH -> if (gender == Gender.MALE) {
-                listOf("en-us-x-iom-network", "en-us-x-iom-local", "en-us-x-tpf-network", "en-us-x-sfg-network", "en-us-x-sfg-local", "en-us-x-iol-local")
+                listOf(
+                    "en-us-x-iom-network", "en-us-x-iom-local",
+                    "en-us-x-tpf-network", "en-us-x-tpf-local",
+                    "en-us-x-tpd-network", "en-us-x-tpd-local",
+                    "en-us-x-iol-network", "en-us-x-iol-local"
+                )
             } else {
-                listOf("en-us-x-iob-network", "en-us-x-iob-local", "en-us-x-tpc-network", "en-us-x-tpc-local", "en-us-x-sfg-local")
+                listOf(
+                    "en-us-x-iob-network", "en-us-x-iob-local",
+                    "en-us-x-tpc-network", "en-us-x-tpc-local",
+                    "en-us-x-sfg-network", "en-us-x-sfg-local",
+                    "en-us-x-iog-network", "en-us-x-iog-local"
+                )
             }
             Language.TELUGU -> if (gender == Gender.MALE) {
-                listOf("te-in-x-tem-network", "te-in-x-tem-local")
+                listOf(
+                    "te-in-x-teg-network", "te-in-x-teg-local"
+                )
             } else {
-                listOf("te-in-x-tef-network", "te-in-x-tef-local")
+                listOf(
+                    "te-in-x-tee-network", "te-in-x-tee-local"
+                )
             }
             else -> emptyList()
         }
@@ -108,7 +151,7 @@ class TtsManager(private val context: Context) {
         if (matchedVoice == null) {
             val genderTag = if (gender == Gender.MALE) "male" else "female"
             val altTag    = if (gender == Gender.MALE) "-m-" else "-f-"
-            val indicTag  = if (gender == Gender.MALE) "tem" else "tef"
+            val indicTag  = if (gender == Gender.MALE) "teg" else "tee"
 
             matchedVoice = availableVoices.firstOrNull { v ->
                 val name = v.name.lowercase()
@@ -116,19 +159,29 @@ class TtsManager(private val context: Context) {
             }
         }
 
-        // 3. Fallback to default locale voice if no gender match found
+        val voiceBefore = ttsEngine.voice?.name ?: "null"
+
+        // 3. Set voice and inspect actual assigned Voice object
         if (matchedVoice != null) {
             try {
                 ttsEngine.voice = matchedVoice
-                selectedVoiceName = matchedVoice.name
-                Log.d(TAG, "Selected gender-matched voice: ${matchedVoice.name} for $language ($gender)")
+                val voiceAfter = ttsEngine.voice?.name ?: "null"
+                selectedVoiceName = voiceAfter
+                isMissingVoice = false
+
+                Log.d(TAG, "SUCCESSFULLY ASSIGNED GENDER VOICE for $language ($gender):\n" +
+                        "   Requested: '${matchedVoice.name}'\n" +
+                        "   Assigned:  '$voiceAfter'\n" +
+                        "   Match Verified: ${voiceAfter == matchedVoice.name}")
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to set voice ${matchedVoice.name}: ${e.message}")
                 selectedVoiceName = "Default Locale Voice"
+                isMissingVoice = true
             }
         } else {
-            selectedVoiceName = "Default Locale Voice"
-            Log.d(TAG, "No specific $gender voice found for $language -> using default locale voice")
+            selectedVoiceName = "Default Locale Voice (Unmatched)"
+            isMissingVoice = true
+            Log.w(TAG, "No specific $gender voice found for $language -> surfaced warning card, fallback to '$voiceBefore'")
         }
     }
 
@@ -140,6 +193,7 @@ class TtsManager(private val context: Context) {
         val ttsEngine = tts ?: return@withContext -1L
         if (!ready || text.isBlank()) return@withContext -1L
 
+        val currentVoiceName = ttsEngine.voice?.name ?: "null"
         val utteranceId = "synth_${System.currentTimeMillis()}_${destFile.nameWithoutExtension}"
 
         val success = suspendCancellableCoroutine<Boolean> { cont ->
@@ -175,10 +229,9 @@ class TtsManager(private val context: Context) {
             return@withContext -1L
         }
 
-        // Measure rendered audio duration
         val durationMs = measureAudioDurationMs(destFile)
-        Log.d(TAG, "Pre-rendered segment audio (${destFile.name}): text=\"${text.take(40)}...\", " +
-                "size=${destFile.length()} bytes, duration=${durationMs}ms")
+        Log.d(TAG, "Pre-rendered audio (${destFile.name}): text=\"${text.take(40)}...\", " +
+                "activeVoice='$currentVoiceName', size=${destFile.length()} bytes, duration=${durationMs}ms")
         durationMs
     }
 

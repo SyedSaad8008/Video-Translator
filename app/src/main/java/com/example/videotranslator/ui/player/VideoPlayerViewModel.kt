@@ -133,7 +133,6 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
             }
             _processingState.value = ProcessingState.Idle
 
-            // Automatically load bundled sample_video.mp4 if no video is selected yet
             val sampleUri = Uri.parse("android.resource://${getApplication<Application>().packageName}/${R.raw.sample_video}")
             onVideoPicked(sampleUri)
         }
@@ -176,29 +175,9 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
     // ── Pipeline ──────────────────────────────────────────────────────────────
     private suspend fun runPipeline(uri: Uri) {
         try {
-            // ── Cache hit validation ────────────────────────────────────
-            if (cache.isCached(uri)) {
-                cache.load(uri)?.let { cached ->
-                    // STRICT VALIDATION: Ensure cache contains pre-rendered segment audio files that exist on disk!
-                    val isValidCache = cached.isNotEmpty() && cached.all { seg ->
-                        seg.englishAudioPath.isNotBlank() && File(seg.englishAudioPath).exists() &&
-                        seg.teluguAudioPath.isNotBlank() && File(seg.teluguAudioPath).exists()
-                    }
+            // Force clean pipeline run for diagnostic evaluation
+            cache.clearFor(uri)
 
-                    if (isValidCache) {
-                        Log.d(TAG, "Valid pre-rendered segment cache loaded: ${cached.size} segments")
-                        loadInstrumentalIfAvailable(uri)
-                        _processingState.value = ProcessingState.Ready
-                        startTtsPolling()
-                        return
-                    } else {
-                        Log.d(TAG, "Stale or incomplete cache detected -> invalidating and re-processing pipeline")
-                        cache.clearFor(uri)
-                    }
-                }
-            }
-
-            // ── 1. Wait for pre-warm ──────────────────────────────────
             _processingState.value = ProcessingState.Loading("Initializing AI models…", 0.05f)
             prewarmJob?.join()
 
@@ -207,30 +186,47 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
             val monoFile         = cache.pcmFileFor(uri)
             val instrumentalFile = cache.instrumentalFileFor(uri)
 
-            val result = if (monoFile.exists()) {
-                val mono  = audioExtractor.loadMonoFromCache(monoFile)
-                val instr = if (instrumentalFile.exists())
-                    audioExtractor.loadInstrumentalFromCache(instrumentalFile) else null
-                AudioExtractor.ExtractionResult(mono, instr)
-            } else {
-                audioExtractor.extractToFiles(uri, monoFile, instrumentalFile)
-            }
-
+            val result = audioExtractor.extractToFiles(uri, monoFile, instrumentalFile)
             if (result.instrumental != null) instrumental.loadFromFile(instrumentalFile)
 
-            // ── 2b. PART A: Voice Gender Detection (DSP Pitch Estimator) ────────
+            // ── DIAGNOSTIC STEP 1: Pitch Estimation & Gender Detection ────────
             _processingState.value = ProcessingState.Loading("Detecting speaker voice pitch & gender…", 0.28f)
             val genderResult = genderDetector.detectGender(result.mono)
             _detectedGender.value = genderResult.gender
-            Log.d(TAG, "PART A - Speaker Gender: ${genderResult.gender} (Median F0 = ${"%.1f".format(genderResult.medianF0)} Hz)")
+
+            Log.d(TAG, "================ DIAGNOSTIC STEP 1 REPORT ================")
+            Log.d(TAG, "Source Audio Voiced Frames: ${genderResult.totalVoicedFrames}")
+            Log.d(TAG, "Computed Median F0 Pitch:   ${"%.2f".format(genderResult.medianF0)} Hz")
+            Log.d(TAG, "Classified Speaker Gender:  ${genderResult.gender}")
+            Log.d(TAG, "==========================================================")
+
+            // ── DIAGNOSTIC STEP 3: Test Male vs Female Voice Selection Side-by-Side ─
+            Log.d(TAG, "================ DIAGNOSTIC STEP 3 SIDE-BY-SIDE EVALUATION ================")
+            ttsManager.selectVoiceForGender(Language.ENGLISH, Gender.MALE)
+            val maleEnVoice = ttsManager.selectedVoiceName
+            ttsManager.selectVoiceForGender(Language.ENGLISH, Gender.FEMALE)
+            val femaleEnVoice = ttsManager.selectedVoiceName
+
+            ttsManager.selectVoiceForGender(Language.TELUGU, Gender.MALE)
+            val maleTeVoice = ttsManager.selectedVoiceName
+            ttsManager.selectVoiceForGender(Language.TELUGU, Gender.FEMALE)
+            val femaleTeVoice = ttsManager.selectedVoiceName
+
+            Log.d(TAG, "English (en-US) Male Voice:   '$maleEnVoice'")
+            Log.d(TAG, "English (en-US) Female Voice: '$femaleEnVoice'")
+            Log.d(TAG, "English Voices Distinct:       ${maleEnVoice != femaleEnVoice}")
+
+            Log.d(TAG, "Telugu (te-IN) Male Voice:    '$maleTeVoice'")
+            Log.d(TAG, "Telugu (te-IN) Female Voice:  '$femaleTeVoice'")
+            Log.d(TAG, "Telugu Voices Distinct:        ${maleTeVoice != femaleTeVoice}")
+            Log.d(TAG, "==========================================================================")
 
             // ── 3. Transcribe (Vosk) ───────────────────────────────────
             _processingState.value = ProcessingState.Loading("Transcribing Hindi speech…", 0.42f)
             val rawSegments = voskRecognizer.recognise(result.mono)
-            Log.d(TAG, "Vosk recognized ${rawSegments.size} Hindi segments")
 
             // ── 4. Download ML Kit translation models ─────────────────
-            _processingState.value = ProcessingState.Loading("Loading neural translation models…", 0.58f)
+            _processingState.value = ProcessingState.Loading("Loading translation models…", 0.58f)
             translationManager.downloadModels()
 
             // ── 5. Sentence-level translation ─────────────────────────
@@ -267,10 +263,6 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 val teSpeedRatio = if (teRenderedMs > 0) {
                     (teRenderedMs.toFloat() / targetDurationMs.toFloat()).coerceIn(0.75f, 1.5f)
                 } else 1.0f
-
-                Log.d(TAG, "Pre-rendered Segment [$idx] (${seg.startMs}ms -> ${seg.endMs}ms, target=${targetDurationMs}ms):\n" +
-                        "   EN: rendered=${enRenderedMs}ms, speedRatio=${"%.2f".format(enSpeedRatio)}x\n" +
-                        "   TE: rendered=${teRenderedMs}ms, speedRatio=${"%.2f".format(teSpeedRatio)}x")
 
                 finalProcessedSegments.add(
                     seg.copy(
