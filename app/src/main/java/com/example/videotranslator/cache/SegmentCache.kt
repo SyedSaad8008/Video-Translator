@@ -26,7 +26,6 @@ class SegmentCache(private val context: Context) {
 
     /** Derive a short, filesystem-safe key from the video URI. */
     private fun keyFor(uri: Uri): String {
-        // Use the last path segment + hash to stay short and collision-free
         val hash = uri.toString().hashCode().toString(16).takeLast(8)
         val name = uri.lastPathSegment?.replace(Regex("[^a-zA-Z0-9_-]"), "_")?.take(20) ?: "video"
         return "${name}_$hash"
@@ -46,6 +45,13 @@ class SegmentCache(private val context: Context) {
     fun instrumentalFileFor(uri: Uri): File = File(context.filesDir, "music_${keyFor(uri)}.raw")
 
     fun hasInstrumental(uri: Uri): Boolean = instrumentalFileFor(uri).exists()
+
+    /** Directory for pre-rendered segment audio files (Part B sync). */
+    fun renderedAudioDir(uri: Uri): File {
+        val dir = File(context.filesDir, "rendered_${keyFor(uri)}")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
 
     suspend fun load(uri: Uri): List<TranslationSegment>? = withContext(Dispatchers.IO) {
         val file = segmentFile(keyFor(uri))
@@ -68,17 +74,19 @@ class SegmentCache(private val context: Context) {
         }
     }
 
-    /** Remove cached data for one specific video. */
+    /** Remove cached data and pre-rendered audio files for one specific video. */
     fun clearFor(uri: Uri) {
         val k = keyFor(uri)
         segmentFile(k).delete()
         pcmFile(k).delete()
+        instrumentalFileFor(uri).delete()
+        renderedAudioDir(uri).deleteRecursively()
     }
 
     /** Remove ALL cached data (all videos). */
     fun clearAll() {
         context.filesDir.listFiles()
-            ?.filter { it.name.startsWith("segments_") || it.name.startsWith("audio_") }
-            ?.forEach { it.delete() }
+            ?.filter { it.name.startsWith("segments_") || it.name.startsWith("audio_") || it.name.startsWith("rendered_") }
+            ?.forEach { it.deleteRecursively() }
     }
 }

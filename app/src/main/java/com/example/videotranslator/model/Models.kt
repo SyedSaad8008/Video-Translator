@@ -2,9 +2,16 @@ package com.example.videotranslator.model
 
 import kotlinx.serialization.Serializable
 
+/** Speaker gender classification. */
+enum class Gender {
+    MALE,
+    FEMALE,
+    UNKNOWN;
+}
+
 /**
- * One recognised speech segment with start/end timestamps (ms) and the
- * original Hindi text plus its translations.
+ * One recognised speech segment with start/end timestamps (ms),
+ * original Hindi text, translations, and pre-rendered audio file metadata.
  */
 @Serializable
 data class TranslationSegment(
@@ -12,7 +19,11 @@ data class TranslationSegment(
     val endMs: Long,
     val hindi: String,
     val english: String = "",
-    val telugu: String = ""
+    val telugu: String = "",
+    val englishAudioPath: String = "",
+    val englishSpeedRatio: Float = 1.0f,
+    val teluguAudioPath: String = "",
+    val teluguSpeedRatio: Float = 1.0f
 )
 
 /** Target language for playback. */

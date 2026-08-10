@@ -9,8 +9,11 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import com.example.videotranslator.audio.AudioExtractor
+import com.example.videotranslator.audio.GenderDetector
 import com.example.videotranslator.audio.InstrumentalPlayer
+import com.example.videotranslator.audio.SegmentAudioPlayer
 import com.example.videotranslator.cache.SegmentCache
+import com.example.videotranslator.model.Gender
 import com.example.videotranslator.model.Language
 import com.example.videotranslator.model.ProcessingState
 import com.example.videotranslator.model.TranslationSegment
@@ -25,27 +28,28 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.File
 
 private const val TAG = "VideoPlayerVM"
 
 // ── Polling ────────────────────────────────────────────────────────────────────
-private const val POLL_INTERVAL_MS    = 100L
+private const val POLL_INTERVAL_MS     = 100L
 private const val TRIGGER_TOLERANCE_MS = 200L
 
 // ── Volume levels ──────────────────────────────────────────────────────────────
-/** Hindi — full original audio */
-private const val EXOPLAYER_FULL   = 1.0f
-/** Translated — mute original audio completely */
-private const val EXOPLAYER_MUTED  = 0.0f
+private const val EXOPLAYER_FULL  = 1.0f
+private const val EXOPLAYER_MUTED = 0.0f
 
 class VideoPlayerViewModel(application: Application) : AndroidViewModel(application) {
 
     // ── Dependencies ──────────────────────────────────────────────────────────
     private val cache              = SegmentCache(application)
     private val audioExtractor     = AudioExtractor(application)
+    private val genderDetector     = GenderDetector()
     private val voskRecognizer     = VoskSpeechRecognizer(application)
     private val translationManager = TranslationManager()
     val ttsManager                 = TtsManager(application)
+    private val segmentAudioPlayer = SegmentAudioPlayer()
     private val instrumental       = InstrumentalPlayer(viewModelScope)
 
     // ── UI State ──────────────────────────────────────────────────────────────
@@ -61,6 +65,9 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
     private val _videoUri = MutableStateFlow<Uri?>(null)
     val videoUri: StateFlow<Uri?> = _videoUri.asStateFlow()
 
+    private val _detectedGender = MutableStateFlow(Gender.UNKNOWN)
+    val detectedGender: StateFlow<Gender> = _detectedGender.asStateFlow()
+
     // ── ExoPlayer ─────────────────────────────────────────────────────────────
     val exoPlayer: ExoPlayer = ExoPlayer.Builder(application).build().apply {
         repeatMode    = Player.REPEAT_MODE_OFF
@@ -69,33 +76,25 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
     private var ttsPollingJob: Job? = null
     private var pipelineJob:   Job? = null
-    private var prewarmJob:    Job? = null   // pre-warm Vosk + ML Kit before video pick
+    private var prewarmJob:    Job? = null
     private var lastSpokenIndex = -1
 
     // ── Player.Listener ───────────────────────────────────────────────────────
-    /**
-     * This listener is the KEY fix for TTS sync:
-     *  - Pause  → immediately stop TTS and instrumental (no lag)
-     *  - Resume → reset segment index; resume instrumental from exact position
-     *  - Seek   → stop TTS, reset index, jump instrumental to new position
-     *  - End    → clean up TTS and instrumental
-     */
     private val playerListener = object : Player.Listener {
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             if (isPlaying) {
-                // ── VIDEO RESUMED ─────────────────────────────────────────
-                lastSpokenIndex = -1     // re-evaluate segments from current position
+                lastSpokenIndex = -1
                 val lang = _currentLanguage.value
-                if (lang != Language.HINDI && instrumental.isLoaded) {
-                    instrumental.resumeFrom(exoPlayer.currentPosition)
+                if (lang != Language.HINDI) {
+                    segmentAudioPlayer.resume()
+                    if (instrumental.isLoaded) instrumental.resumeFrom(exoPlayer.currentPosition)
                 }
                 Log.d(TAG, "Resumed at ${exoPlayer.currentPosition}ms")
             } else {
-                // ── VIDEO PAUSED ──────────────────────────────────────────
-                ttsManager.stop()        // kill TTS immediately — no lag
+                segmentAudioPlayer.pause()
                 instrumental.pause()
-                Log.d(TAG, "Paused → TTS + instrumental stopped")
+                Log.d(TAG, "Paused -> Segment audio + instrumental paused")
             }
         }
 
@@ -104,27 +103,25 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
             newPosition: Player.PositionInfo,
             reason: Int
         ) {
-            // ── SEEK ──────────────────────────────────────────────────────
-            ttsManager.stop()
+            segmentAudioPlayer.stop()
             lastSpokenIndex = -1
             if (_currentLanguage.value != Language.HINDI && instrumental.isLoaded) {
                 instrumental.seekTo(newPosition.positionMs)
             }
-            Log.d(TAG, "Seek → ${newPosition.positionMs}ms")
+            Log.d(TAG, "Seek -> ${newPosition.positionMs}ms")
         }
 
         override fun onPlaybackStateChanged(state: Int) {
             if (state == Player.STATE_ENDED) {
-                ttsManager.stop()
+                segmentAudioPlayer.stop()
                 instrumental.stop()
-                Log.d(TAG, "Video ended → TTS + instrumental stopped")
+                Log.d(TAG, "Video ended -> Segment audio + instrumental stopped")
             }
         }
     }
 
     // ── Init ──────────────────────────────────────────────────────────────────
     init {
-        // Attach listener BEFORE prepare so we never miss events
         exoPlayer.addListener(playerListener)
 
         viewModelScope.launch {
@@ -133,21 +130,11 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 _processingState.value = ProcessingState.Error("TTS engine failed to initialise.")
                 return@launch
             }
-            ttsManager.setLanguage(Language.HINDI)
-
-            // TTS callbacks (no volume ducking needed — original is fully muted)
-            ttsManager.onSpeakStart = { /* nothing — original muted */ }
-            ttsManager.onSpeakDone  = { /* nothing — original muted */ }
-
             _processingState.value = ProcessingState.Idle
         }
 
-        // ══ PRE-WARM: load Vosk model + ML Kit translation models in background ═════════
-        // This runs as soon as the ViewModel is created (app launch), so by the time
-        // the user picks a video, both heavy models are already in memory.
         prewarmJob = viewModelScope.launch {
             try {
-                // Run both model loads in parallel
                 val voskLoad = launch {
                     try { voskRecognizer.loadModel() }
                     catch (e: Exception) { Log.w(TAG, "Vosk prewarm failed (will retry): ${e.message}") }
@@ -168,7 +155,7 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
         Log.d(TAG, "Video picked: $uri")
         pipelineJob?.cancel()
         ttsPollingJob?.cancel()
-        ttsManager.stop()
+        segmentAudioPlayer.stop()
         instrumental.stop()
         lastSpokenIndex = -1
         _videoUri.value = uri
@@ -187,7 +174,7 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
             // ── Cache hit ───────────────────────────────────────────────
             if (cache.isCached(uri)) {
                 cache.load(uri)?.let { cached ->
-                    Log.d(TAG, "Segments from cache: ${cached.size}")
+                    Log.d(TAG, "Segments loaded from cache: ${cached.size}")
                     loadInstrumentalIfAvailable(uri)
                     _processingState.value = ProcessingState.Ready
                     startTtsPolling()
@@ -195,10 +182,10 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 }
             }
 
-            // ── 1. Wait for pre-warm to complete (usually already done) ────────
-            prewarmJob?.join()   // no-op if already finished
+            // ── 1. Wait for pre-warm ──────────────────────────────────
+            prewarmJob?.join()
 
-            // ── 2. Extract audio (mono + instrumental in one pass) ──────────
+            // ── 2. Extract audio (mono + instrumental) ────────────────
             _processingState.value = ProcessingState.Loading("Extracting audio…", 0.10f)
             val monoFile         = cache.pcmFileFor(uri)
             val instrumentalFile = cache.instrumentalFileFor(uri)
@@ -214,23 +201,68 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
             if (result.instrumental != null) instrumental.loadFromFile(instrumentalFile)
 
-            // ── 3. Transcribe (VAD-filtered) ──────────────────────────────
+            // ── 2b. PART A: Voice Gender Detection (DSP Pitch Estimator) ────────
+            _processingState.value = ProcessingState.Loading("Detecting speaker voice gender…", 0.25f)
+            val genderResult = genderDetector.detectGender(result.mono)
+            _detectedGender.value = genderResult.gender
+            Log.d(TAG, "PART A VERIFICATION - Detected Speaker Gender: ${genderResult.gender} " +
+                    "(Median F0 = ${"%.1f".format(genderResult.medianF0)} Hz across ${genderResult.totalVoicedFrames} voiced frames)")
+
+            // ── 3. Transcribe (Vosk) ───────────────────────────────────
             _processingState.value = ProcessingState.Loading("Transcribing Hindi audio…", 0.40f)
             val rawSegments = voskRecognizer.recognise(result.mono)
-            Log.d(TAG, "Vosk: ${rawSegments.size} segments")
+            Log.d(TAG, "Vosk recognized ${rawSegments.size} Hindi segments")
 
-
-            // ── 4. Download ML Kit translation models ─────────────────────
-            _processingState.value = ProcessingState.Loading("Downloading translation models…", 0.60f)
+            // ── 4. Download ML Kit translation models ─────────────────
+            _processingState.value = ProcessingState.Loading("Downloading translation models…", 0.55f)
             translationManager.downloadModels()
 
-            // ── 5. Sentence-level translation ─────────────────────────────
-            _processingState.value = ProcessingState.Loading("Translating…", 0.80f)
-            val translated = translationManager.translate(rawSegments)
+            // ── 5. Sentence-level translation ─────────────────────────
+            _processingState.value = ProcessingState.Loading("Translating speech…", 0.70f)
+            val translatedSegments = translationManager.translate(rawSegments)
 
-            // ── 6. Cache + publish ────────────────────────────────────────
-            _processingState.value = ProcessingState.Loading("Saving…", 0.97f)
-            cache.save(uri, translated)
+            // ── 5b. PART B: Pre-Render Segment Audio & Duration Matching ─────────
+            _processingState.value = ProcessingState.Loading("Pre-rendering gender-matched speech audio…", 0.85f)
+            val renderedDir = cache.renderedAudioDir(uri)
+
+            val finalProcessedSegments = mutableListOf<TranslationSegment>()
+            for (idx in translatedSegments.indices) {
+                val seg = translatedSegments[idx]
+                val targetDurationMs = (seg.endMs - seg.startMs).coerceAtLeast(300L)
+
+                // Render English audio
+                val enFile = File(renderedDir, "seg_${idx}_en.wav")
+                ttsManager.selectVoiceForGender(Language.ENGLISH, genderResult.gender)
+                val enRenderedMs = ttsManager.synthesizeToFile(seg.english, enFile)
+                val enSpeedRatio = if (enRenderedMs > 0) {
+                    (enRenderedMs.toFloat() / targetDurationMs.toFloat()).coerceIn(0.75f, 1.5f)
+                } else 1.0f
+
+                // Render Telugu audio
+                val teFile = File(renderedDir, "seg_${idx}_te.wav")
+                ttsManager.selectVoiceForGender(Language.TELUGU, genderResult.gender)
+                val teRenderedMs = ttsManager.synthesizeToFile(seg.telugu, teFile)
+                val teSpeedRatio = if (teRenderedMs > 0) {
+                    (teRenderedMs.toFloat() / targetDurationMs.toFloat()).coerceIn(0.75f, 1.5f)
+                } else 1.0f
+
+                Log.d(TAG, "PART B VERIFICATION - Segment [$idx] (${seg.startMs}ms -> ${seg.endMs}ms, target=${targetDurationMs}ms):\n" +
+                        "   EN: rendered=${enRenderedMs}ms, speedRatio=${"%.2f".format(enSpeedRatio)}x, file=${enFile.name}\n" +
+                        "   TE: rendered=${teRenderedMs}ms, speedRatio=${"%.2f".format(teSpeedRatio)}x, file=${teFile.name}")
+
+                finalProcessedSegments.add(
+                    seg.copy(
+                        englishAudioPath = enFile.absolutePath,
+                        englishSpeedRatio = enSpeedRatio,
+                        teluguAudioPath = teFile.absolutePath,
+                        teluguSpeedRatio = teSpeedRatio
+                    )
+                )
+            }
+
+            // ── 6. Cache + publish ────────────────────────────────────
+            _processingState.value = ProcessingState.Loading("Saving…", 0.98f)
+            cache.save(uri, finalProcessedSegments)
             _processingState.value = ProcessingState.Ready
             startTtsPolling()
 
@@ -242,7 +274,6 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    /** Load the cached instrumental file into the player (if it exists). */
     private fun loadInstrumentalIfAvailable(uri: Uri) {
         val file = cache.instrumentalFileFor(uri)
         if (file.exists()) instrumental.loadFromFile(file)
@@ -252,19 +283,14 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
     fun switchLanguage(language: Language) {
         if (_currentLanguage.value == language) return
         _currentLanguage.value = language
-        ttsManager.stop()
-        ttsManager.setLanguage(language)
+        segmentAudioPlayer.stop()
+        ttsManager.selectVoiceForGender(language, _detectedGender.value)
         _missingVoiceWarning.value = ttsManager.isMissingVoice
         applyVolumeForLanguage(language)
         lastSpokenIndex = -1
         if (_processingState.value == ProcessingState.Ready) startTtsPolling()
     }
 
-    /**
-     * Volume strategy:
-     *  - Hindi  → ExoPlayer full (1.0) — hear original
-     *  - Other  → ExoPlayer muted (0.0) — only hear TTS voice
-     */
     private fun applyVolumeForLanguage(lang: Language) {
         if (lang == Language.HINDI) {
             exoPlayer.volume = EXOPLAYER_FULL
@@ -275,41 +301,39 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    // ── TTS polling ───────────────────────────────────────────────────────────
-    /**
-     * Polls every 100ms to dispatch TTS for the segment at the current video position.
-     * The Player.Listener guarantees TTS is stopped when the video is not playing,
-     * so this loop only fires TTS when `exoPlayer.isPlaying == true`.
-     */
+    // ── TTS / Audio segment polling ───────────────────────────────────────────
     private fun startTtsPolling() {
         ttsPollingJob?.cancel()
         ttsPollingJob = viewModelScope.launch {
             while (isActive) {
                 val lang = _currentLanguage.value
                 if (lang != Language.HINDI && exoPlayer.isPlaying) {
-                    dispatchTts(exoPlayer.currentPosition, lang)
+                    dispatchSegmentAudio(exoPlayer.currentPosition, lang)
                 }
                 delay(POLL_INTERVAL_MS)
             }
         }
     }
 
-    private fun dispatchTts(posMs: Long, language: Language) {
+    private fun dispatchSegmentAudio(posMs: Long, language: Language) {
         val segs = cache.lastLoaded ?: return
         if (segs.isEmpty()) return
         val idx = segs.indexOfFirst { posMs >= (it.startMs - TRIGGER_TOLERANCE_MS) && posMs <= it.endMs }
-        if (idx < 0 || idx == lastSpokenIndex || ttsManager.isSpeaking()) return
+        if (idx < 0 || idx == lastSpokenIndex || segmentAudioPlayer.isPlaying()) return
         lastSpokenIndex = idx
         val seg = segs[idx]
-        val text = when (language) {
-            Language.ENGLISH -> seg.english
-            Language.TELUGU  -> seg.telugu
-            Language.HINDI   -> seg.hindi
+
+        val (audioPath, speedRatio) = when (language) {
+            Language.ENGLISH -> Pair(seg.englishAudioPath, seg.englishSpeedRatio)
+            Language.TELUGU  -> Pair(seg.teluguAudioPath, seg.teluguSpeedRatio)
+            Language.HINDI   -> Pair("", 1.0f)
         }
-        if (text.isNotBlank()) {
-            val segDuration = (seg.endMs - seg.startMs).coerceAtLeast(300L)
-            val isIndic = language == Language.TELUGU
-            ttsManager.speakTimed(text, segDuration, isIndic)
+
+        if (audioPath.isNotBlank()) {
+            val file = File(audioPath)
+            if (file.exists() && file.length() > 0) {
+                segmentAudioPlayer.playSegment(file, speedRatio)
+            }
         }
     }
 
@@ -317,8 +341,8 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
     fun reprocess() {
         val uri = _videoUri.value ?: return
         ttsPollingJob?.cancel()
+        segmentAudioPlayer.stop()
         cache.clearFor(uri)
-        cache.instrumentalFileFor(uri).delete()
         _processingState.value = ProcessingState.Idle
         lastSpokenIndex = -1
         instrumental.stop()
@@ -331,6 +355,7 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
         prewarmJob?.cancel()
         pipelineJob?.cancel()
         ttsPollingJob?.cancel()
+        segmentAudioPlayer.release()
         ttsManager.shutdown()
         voskRecognizer.close()
         translationManager.close()
