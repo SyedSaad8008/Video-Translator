@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
+import com.example.videotranslator.R
 import com.example.videotranslator.audio.AudioExtractor
 import com.example.videotranslator.audio.GenderDetector
 import com.example.videotranslator.audio.InstrumentalPlayer
@@ -131,17 +132,21 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 return@launch
             }
             _processingState.value = ProcessingState.Idle
+
+            // Automatically load bundled sample_video.mp4 if no video is selected yet
+            val sampleUri = Uri.parse("android.resource://${getApplication<Application>().packageName}/${R.raw.sample_video}")
+            onVideoPicked(sampleUri)
         }
 
         prewarmJob = viewModelScope.launch {
             try {
                 val voskLoad = launch {
                     try { voskRecognizer.loadModel() }
-                    catch (e: Exception) { Log.w(TAG, "Vosk prewarm failed (will retry): ${e.message}") }
+                    catch (e: Exception) { Log.w(TAG, "Vosk prewarm failed: ${e.message}") }
                 }
                 val mlKitLoad = launch {
                     try { translationManager.downloadModels() }
-                    catch (e: Exception) { Log.w(TAG, "ML Kit prewarm failed (will retry): ${e.message}") }
+                    catch (e: Exception) { Log.w(TAG, "ML Kit prewarm failed: ${e.message}") }
                 }
                 voskLoad.join()
                 mlKitLoad.join()
@@ -171,22 +176,34 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
     // ── Pipeline ──────────────────────────────────────────────────────────────
     private suspend fun runPipeline(uri: Uri) {
         try {
-            // ── Cache hit ───────────────────────────────────────────────
+            // ── Cache hit validation ────────────────────────────────────
             if (cache.isCached(uri)) {
                 cache.load(uri)?.let { cached ->
-                    Log.d(TAG, "Segments loaded from cache: ${cached.size}")
-                    loadInstrumentalIfAvailable(uri)
-                    _processingState.value = ProcessingState.Ready
-                    startTtsPolling()
-                    return
+                    // STRICT VALIDATION: Ensure cache contains pre-rendered segment audio files that exist on disk!
+                    val isValidCache = cached.isNotEmpty() && cached.all { seg ->
+                        seg.englishAudioPath.isNotBlank() && File(seg.englishAudioPath).exists() &&
+                        seg.teluguAudioPath.isNotBlank() && File(seg.teluguAudioPath).exists()
+                    }
+
+                    if (isValidCache) {
+                        Log.d(TAG, "Valid pre-rendered segment cache loaded: ${cached.size} segments")
+                        loadInstrumentalIfAvailable(uri)
+                        _processingState.value = ProcessingState.Ready
+                        startTtsPolling()
+                        return
+                    } else {
+                        Log.d(TAG, "Stale or incomplete cache detected -> invalidating and re-processing pipeline")
+                        cache.clearFor(uri)
+                    }
                 }
             }
 
             // ── 1. Wait for pre-warm ──────────────────────────────────
+            _processingState.value = ProcessingState.Loading("Initializing AI models…", 0.05f)
             prewarmJob?.join()
 
             // ── 2. Extract audio (mono + instrumental) ────────────────
-            _processingState.value = ProcessingState.Loading("Extracting audio…", 0.10f)
+            _processingState.value = ProcessingState.Loading("Extracting audio from video…", 0.15f)
             val monoFile         = cache.pcmFileFor(uri)
             val instrumentalFile = cache.instrumentalFileFor(uri)
 
@@ -202,32 +219,37 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
             if (result.instrumental != null) instrumental.loadFromFile(instrumentalFile)
 
             // ── 2b. PART A: Voice Gender Detection (DSP Pitch Estimator) ────────
-            _processingState.value = ProcessingState.Loading("Detecting speaker voice gender…", 0.25f)
+            _processingState.value = ProcessingState.Loading("Detecting speaker voice pitch & gender…", 0.28f)
             val genderResult = genderDetector.detectGender(result.mono)
             _detectedGender.value = genderResult.gender
-            Log.d(TAG, "PART A VERIFICATION - Detected Speaker Gender: ${genderResult.gender} " +
-                    "(Median F0 = ${"%.1f".format(genderResult.medianF0)} Hz across ${genderResult.totalVoicedFrames} voiced frames)")
+            Log.d(TAG, "PART A - Speaker Gender: ${genderResult.gender} (Median F0 = ${"%.1f".format(genderResult.medianF0)} Hz)")
 
             // ── 3. Transcribe (Vosk) ───────────────────────────────────
-            _processingState.value = ProcessingState.Loading("Transcribing Hindi audio…", 0.40f)
+            _processingState.value = ProcessingState.Loading("Transcribing Hindi speech…", 0.42f)
             val rawSegments = voskRecognizer.recognise(result.mono)
             Log.d(TAG, "Vosk recognized ${rawSegments.size} Hindi segments")
 
             // ── 4. Download ML Kit translation models ─────────────────
-            _processingState.value = ProcessingState.Loading("Downloading translation models…", 0.55f)
+            _processingState.value = ProcessingState.Loading("Loading neural translation models…", 0.58f)
             translationManager.downloadModels()
 
             // ── 5. Sentence-level translation ─────────────────────────
-            _processingState.value = ProcessingState.Loading("Translating speech…", 0.70f)
+            _processingState.value = ProcessingState.Loading("Translating speech into English & Telugu…", 0.72f)
             val translatedSegments = translationManager.translate(rawSegments)
 
             // ── 5b. PART B: Pre-Render Segment Audio & Duration Matching ─────────
-            _processingState.value = ProcessingState.Loading("Pre-rendering gender-matched speech audio…", 0.85f)
             val renderedDir = cache.renderedAudioDir(uri)
-
             val finalProcessedSegments = mutableListOf<TranslationSegment>()
+            val totalSegs = translatedSegments.size.coerceAtLeast(1)
+
             for (idx in translatedSegments.indices) {
                 val seg = translatedSegments[idx]
+                val progressStep = 0.72f + (0.24f * (idx.toFloat() / totalSegs.toFloat()))
+                _processingState.value = ProcessingState.Loading(
+                    "Pre-rendering audio (Segment ${idx + 1}/$totalSegs)…",
+                    progressStep
+                )
+
                 val targetDurationMs = (seg.endMs - seg.startMs).coerceAtLeast(300L)
 
                 // Render English audio
@@ -246,9 +268,9 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
                     (teRenderedMs.toFloat() / targetDurationMs.toFloat()).coerceIn(0.75f, 1.5f)
                 } else 1.0f
 
-                Log.d(TAG, "PART B VERIFICATION - Segment [$idx] (${seg.startMs}ms -> ${seg.endMs}ms, target=${targetDurationMs}ms):\n" +
-                        "   EN: rendered=${enRenderedMs}ms, speedRatio=${"%.2f".format(enSpeedRatio)}x, file=${enFile.name}\n" +
-                        "   TE: rendered=${teRenderedMs}ms, speedRatio=${"%.2f".format(teSpeedRatio)}x, file=${teFile.name}")
+                Log.d(TAG, "Pre-rendered Segment [$idx] (${seg.startMs}ms -> ${seg.endMs}ms, target=${targetDurationMs}ms):\n" +
+                        "   EN: rendered=${enRenderedMs}ms, speedRatio=${"%.2f".format(enSpeedRatio)}x\n" +
+                        "   TE: rendered=${teRenderedMs}ms, speedRatio=${"%.2f".format(teSpeedRatio)}x")
 
                 finalProcessedSegments.add(
                     seg.copy(
@@ -261,7 +283,7 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
             }
 
             // ── 6. Cache + publish ────────────────────────────────────
-            _processingState.value = ProcessingState.Loading("Saving…", 0.98f)
+            _processingState.value = ProcessingState.Loading("Saving cached audio…", 0.98f)
             cache.save(uri, finalProcessedSegments)
             _processingState.value = ProcessingState.Ready
             startTtsPolling()
