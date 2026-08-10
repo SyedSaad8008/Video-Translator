@@ -10,12 +10,13 @@ private const val SAMPLE_RATE = 16_000
 /**
  * DSP Pitch (F0) Estimator & Gender Classifier.
  *
- * Uses autocorrelation over ~30ms frames of 16kHz mono PCM speech audio.
+ * Uses subharmonic pitch-period autocorrelation over ~30ms frames of 16kHz mono PCM speech audio.
  *  1. Splits audio into 30ms frames (480 samples) with 15ms hop (240 samples).
  *  2. Filters out unvoiced / silent frames with RMS energy below threshold.
- *  3. Computes autocorrelation over lag range 40..200 (80Hz to 400Hz).
- *  4. Takes the median pitch F0 across all voiced frames.
- *  5. Classifies median F0 < 165Hz as MALE, >= 165Hz as FEMALE.
+ *  3. Computes autocorrelation over lag range 45..213 (75Hz to 350Hz).
+ *  4. Applies subharmonic pitch period peak selection (preventing 2x octave doubling).
+ *  5. Takes the median pitch F0 across all voiced frames.
+ *  6. Classifies median F0 < 165Hz as MALE, >= 165Hz as FEMALE.
  */
 class GenderDetector {
 
@@ -34,10 +35,10 @@ class GenderDetector {
         val frameSize = (SAMPLE_RATE * 0.030).toInt() // 480 samples = 30ms
         val frameHop  = (SAMPLE_RATE * 0.015).toInt() // 240 samples = 15ms
 
-        // Lag range corresponding to 80Hz - 400Hz at 16kHz
-        // f = sampleRate / lag -> minLag = 16000 / 400 = 40, maxLag = 16000 / 80 = 200
-        val minLag = (SAMPLE_RATE / 400.0).toInt().coerceAtLeast(1) // 40
-        val maxLag = (SAMPLE_RATE / 80.0).toInt().coerceAtMost(frameSize - 1) // 200
+        // Lag range corresponding to 75Hz - 350Hz at 16kHz
+        // f = sampleRate / lag -> minLag = 16000 / 350 = 45, maxLag = 16000 / 75 = 213
+        val minLag = (SAMPLE_RATE / 350.0).toInt().coerceAtLeast(1) // 45
+        val maxLag = (SAMPLE_RATE / 75.0).toInt().coerceAtMost(frameSize - 1) // 213
 
         val f0Estimates = mutableListOf<Float>()
         var offset = 0
@@ -52,21 +53,47 @@ class GenderDetector {
 
             // Voiced frame energy threshold check (skip silence/noise)
             if (rms >= 120.0) {
-                var bestLag = -1
-                var maxAutocorr = -1.0
+                val lags = IntArray(maxLag - minLag + 1)
+                val autocorrValues = DoubleArray(maxLag - minLag + 1)
+                var maxVal = -1.0
 
-                for (lag in minLag..maxLag) {
+                for (idx in lags.indices) {
+                    val lag = minLag + idx
+                    lags[idx] = lag
                     var autocorr = 0.0
                     for (i in 0 until (frameSize - lag)) {
                         autocorr += pcmMono[offset + i].toDouble() * pcmMono[offset + i + lag].toDouble()
                     }
-                    if (autocorr > maxAutocorr) {
-                        maxAutocorr = autocorr
-                        bestLag = lag
+                    autocorrValues[idx] = autocorr
+                    if (autocorr > maxVal) {
+                        maxVal = autocorr
                     }
                 }
 
-                if (bestLag > 0) {
+                if (maxVal > 0) {
+                    val thresh = maxVal * 0.65
+                    val peakIndices = mutableListOf<Int>()
+
+                    // Find local peaks above threshold
+                    for (i in 1 until autocorrValues.size - 1) {
+                        val v = autocorrValues[i]
+                        if (v >= thresh && v > autocorrValues[i - 1] && v > autocorrValues[i + 1]) {
+                            peakIndices.add(i)
+                        }
+                    }
+
+                    // Select the peak with the LARGEST lag (lowest fundamental frequency F0),
+                    // which prevents 2x harmonic octave doubling (e.g. 225Hz doubling -> 86.5Hz fundamental)!
+                    val bestLag = if (peakIndices.isNotEmpty()) {
+                        peakIndices.maxOf { lags[it] }
+                    } else {
+                        var topIdx = 0
+                        for (i in autocorrValues.indices) {
+                            if (autocorrValues[i] > autocorrValues[topIdx]) topIdx = i
+                        }
+                        lags[topIdx]
+                    }
+
                     val frameF0 = SAMPLE_RATE.toFloat() / bestLag.toFloat()
                     if (frameF0 in 75.0f..450.0f) {
                         f0Estimates.add(frameF0)
