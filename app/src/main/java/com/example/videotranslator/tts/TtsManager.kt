@@ -71,10 +71,10 @@ class TtsManager(private val context: Context) {
     /**
      * Selects a gender-matched voice for [language] and [gender].
      * Uses a verified lookup table for Google TTS engine:
-     *  - English Male:   en-us-x-iom-network, en-us-x-iom-local, en-us-x-tpf-network, en-us-x-tpd-network
-     *  - English Female: en-us-x-iob-network, en-us-x-iob-local, en-us-x-tpc-network, en-us-x-sfg-network
-     *  - Telugu Male:    te-in-x-teg-network, te-in-x-teg-local
-     *  - Telugu Female:  te-in-x-tee-network, te-in-x-tee-local
+     *  - English Male:   en-us-x-tpd-local / network, en-in-x-end-local / network, en-in-x-ena, en-us-x-iom
+     *  - English Female: en-us-x-iob-local / network, en-us-x-tpc-local / network, en-us-x-sfg, en-in-x-enc
+     *  - Telugu Male:    te-in-x-teg-local / network
+     *  - Telugu Female:  te-in-x-tee-local / network
      */
     fun selectVoiceForGender(language: Language, gender: Gender) {
         val ttsEngine = tts ?: return
@@ -110,34 +110,33 @@ class TtsManager(private val context: Context) {
         }
 
         Log.d(TAG, "Found ${availableVoices.size} candidate voices for locale '${targetLocale}' (${language}):")
-        for (v in availableVoices) {
-            Log.d(TAG, "   CANDIDATE: name='${v.name}', locale='${v.locale}', features=${v.features}")
-        }
 
-        // 1. Verified Google TTS Voice Lookup Table
+        // 1. Verified Deep Google TTS Voice Lookup Table
         val preferredVoiceNames = when (language) {
             Language.ENGLISH -> if (gender == Gender.MALE) {
                 listOf(
-                    "en-us-x-iom-network", "en-us-x-iom-local",
-                    "en-us-x-tpf-network", "en-us-x-tpf-local",
-                    "en-us-x-tpd-network", "en-us-x-tpd-local",
-                    "en-us-x-iol-network", "en-us-x-iol-local"
+                    "en-us-x-tpd-local", "en-us-x-tpd-network",
+                    "en-in-x-end-local", "en-in-x-end-network",
+                    "en-in-x-ena-local", "en-in-x-ena-network",
+                    "en-us-x-iom-local", "en-us-x-iom-network",
+                    "en-us-x-iol-local", "en-us-x-iol-network"
                 )
             } else {
                 listOf(
-                    "en-us-x-iob-network", "en-us-x-iob-local",
-                    "en-us-x-tpc-network", "en-us-x-tpc-local",
-                    "en-us-x-sfg-network", "en-us-x-sfg-local",
-                    "en-us-x-iog-network", "en-us-x-iog-local"
+                    "en-us-x-iob-local", "en-us-x-iob-network",
+                    "en-us-x-tpc-local", "en-us-x-tpc-network",
+                    "en-us-x-sfg-local", "en-us-x-sfg-network",
+                    "en-in-x-enc-local", "en-in-x-enc-network",
+                    "en-us-x-iog-local", "en-us-x-iog-network"
                 )
             }
             Language.TELUGU -> if (gender == Gender.MALE) {
                 listOf(
-                    "te-in-x-teg-network", "te-in-x-teg-local"
+                    "te-in-x-teg-local", "te-in-x-teg-network"
                 )
             } else {
                 listOf(
-                    "te-in-x-tee-network", "te-in-x-tee-local"
+                    "te-in-x-tee-local", "te-in-x-tee-network"
                 )
             }
             else -> emptyList()
@@ -169,7 +168,7 @@ class TtsManager(private val context: Context) {
                 selectedVoiceName = voiceAfter
                 isMissingVoice = false
 
-                Log.d(TAG, "SUCCESSFULLY ASSIGNED GENDER VOICE for $language ($gender):\n" +
+                Log.d(TAG, "SUCCESSFULLY ASSIGNED DEEP MALE VOICE for $language ($gender):\n" +
                         "   Requested: '${matchedVoice.name}'\n" +
                         "   Assigned:  '$voiceAfter'\n" +
                         "   Match Verified: ${voiceAfter == matchedVoice.name}")
