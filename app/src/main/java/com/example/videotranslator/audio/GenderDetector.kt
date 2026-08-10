@@ -6,30 +6,33 @@ import kotlin.math.sqrt
 
 private const val TAG = "GenderDetector"
 private const val SAMPLE_RATE = 16_000
+private const val MIN_VOICED_FRAMES = 10 // Require at least ~150ms of voiced speech
 
 /**
  * DSP Pitch (F0) Estimator & Per-Segment Gender Classifier.
  *
  * Implements YIN Normalized Autocorrelation:
  *  1. Splits audio into 30ms frames (480 samples) with 15ms hop (240 samples).
- *  2. Filters out unvoiced / silent frames with RMS energy below threshold.
+ *  2. Filters out unvoiced / silent frames with RMS energy below threshold (RMS < 120).
  *  3. Computes normalized autocorrelation over lag range 45..213 (75Hz to 350Hz).
  *  4. Identifies candidate pitch peaks r(k) >= 0.30.
  *  5. Selects the primary fundamental pitch peak T0 (preventing harmonic doubling & subharmonic lowering).
- *  6. Classifies median F0 < 165Hz as MALE, >= 165Hz as FEMALE.
+ *  6. Requires at least MIN_VOICED_FRAMES (10 frames = ~150ms) to classify. Otherwise falls back to previous segment.
+ *  7. Classifies median F0 < 165Hz as MALE, >= 165Hz as FEMALE.
  */
 class GenderDetector {
 
     data class DetectionResult(
         val medianF0: Float,
         val gender: Gender,
-        val totalVoicedFrames: Int
+        val totalVoicedFrames: Int,
+        val isCarriedOver: Boolean = false
     )
 
     fun detectGender(pcmMono: ShortArray, fallbackGender: Gender = Gender.MALE): DetectionResult {
         if (pcmMono.isEmpty()) {
-            Log.w(TAG, "PCM audio is empty -> defaulting to fallback gender $fallbackGender")
-            return DetectionResult(0f, fallbackGender, 0)
+            Log.w(TAG, "PCM audio is empty -> carried over from fallback gender $fallbackGender")
+            return DetectionResult(0f, fallbackGender, 0, isCarriedOver = true)
         }
 
         val frameSize = (SAMPLE_RATE * 0.030).toInt() // 480 samples = 30ms
@@ -50,7 +53,7 @@ class GenderDetector {
             }
             val rms = sqrt(sumSq / frameSize)
 
-            // Skip silent/unvoiced frames (RMS threshold)
+            // Skip silent/unvoiced frames (RMS threshold check)
             if (rms >= 120.0) {
                 val lags = IntArray(maxLag - minLag + 1)
                 val normAutocorr = DoubleArray(maxLag - minLag + 1)
@@ -87,7 +90,6 @@ class GenderDetector {
                     val thresh = maxPeakVal * 0.70
 
                     // Pick the FIRST peak (smallest lag / highest true fundamental frequency)
-                    // among candidate peaks reaching at least 70% of max peak strength.
                     var bestLag = -1
                     for (k in peakLags.indices) {
                         if (peakVals[k] >= thresh) {
@@ -108,9 +110,10 @@ class GenderDetector {
             offset += frameHop
         }
 
-        if (f0Estimates.isEmpty()) {
-            Log.w(TAG, "No voiced frames in segment PCM slice -> fallback to $fallbackGender")
-            return DetectionResult(0f, fallbackGender, 0)
+        // Insufficient voiced frames check
+        if (f0Estimates.size < MIN_VOICED_FRAMES) {
+            Log.w(TAG, "Insufficient voiced frames (${f0Estimates.size} < $MIN_VOICED_FRAMES) -> carried over from previous segment ($fallbackGender)")
+            return DetectionResult(0f, fallbackGender, f0Estimates.size, isCarriedOver = true)
         }
 
         f0Estimates.sort()
@@ -126,6 +129,6 @@ class GenderDetector {
         Log.d(TAG, "YIN Gender Detection Result: medianF0=${"%.1f".format(medianF0)} Hz, " +
                 "voicedFrames=${f0Estimates.size}, classifiedGender=$classifiedGender")
 
-        return DetectionResult(medianF0, classifiedGender, f0Estimates.size)
+        return DetectionResult(medianF0, classifiedGender, f0Estimates.size, isCarriedOver = false)
     }
 }

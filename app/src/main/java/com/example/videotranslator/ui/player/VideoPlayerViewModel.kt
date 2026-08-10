@@ -171,28 +171,9 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
     // ── Pipeline ──────────────────────────────────────────────────────────────
     private suspend fun runPipeline(uri: Uri) {
         try {
-            // ── Cache hit validation ────────────────────────────────────
-            if (cache.isCached(uri)) {
-                cache.load(uri)?.let { cached ->
-                    val isValidCache = cached.isNotEmpty() && cached.all { seg ->
-                        seg.englishAudioPath.isNotBlank() && File(seg.englishAudioPath).exists() &&
-                        seg.teluguAudioPath.isNotBlank() && File(seg.teluguAudioPath).exists()
-                    }
+            // Force clean pipeline run for diagnostic evaluation
+            cache.clearFor(uri)
 
-                    if (isValidCache) {
-                        Log.d(TAG, "Valid pre-rendered segment cache loaded: ${cached.size} segments")
-                        loadInstrumentalIfAvailable(uri)
-                        _processingState.value = ProcessingState.Ready
-                        startTtsPolling()
-                        return
-                    } else {
-                        Log.d(TAG, "Stale cache detected -> re-processing pipeline")
-                        cache.clearFor(uri)
-                    }
-                }
-            }
-
-            // ── 1. Wait for pre-warm ──────────────────────────────────
             _processingState.value = ProcessingState.Loading("Initializing AI models…", 0.05f)
             prewarmJob?.join()
 
@@ -201,22 +182,14 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
             val monoFile         = cache.pcmFileFor(uri)
             val instrumentalFile = cache.instrumentalFileFor(uri)
 
-            val result = if (monoFile.exists()) {
-                val mono  = audioExtractor.loadMonoFromCache(monoFile)
-                val instr = if (instrumentalFile.exists())
-                    audioExtractor.loadInstrumentalFromCache(instrumentalFile) else null
-                AudioExtractor.ExtractionResult(mono, instr)
-            } else {
-                audioExtractor.extractToFiles(uri, monoFile, instrumentalFile)
-            }
-
+            val result = audioExtractor.extractToFiles(uri, monoFile, instrumentalFile)
             if (result.instrumental != null) instrumental.loadFromFile(instrumentalFile)
 
             // ── 2b. Global Voice Gender Detection (Baseline) ──────────────
             _processingState.value = ProcessingState.Loading("Analyzing global audio pitch…", 0.28f)
             val globalGenderResult = genderDetector.detectGender(result.mono)
             _detectedGender.value = globalGenderResult.gender
-            Log.d(TAG, "Global Audio Gender: ${globalGenderResult.gender} (Median F0 = ${"%.1f".format(globalGenderResult.medianF0)} Hz)")
+            Log.d(TAG, "Global Audio Gender Baseline: ${globalGenderResult.gender} (Median F0 = ${"%.1f".format(globalGenderResult.medianF0)} Hz)")
 
             // ── 3. Transcribe (Vosk) ───────────────────────────────────
             _processingState.value = ProcessingState.Loading("Transcribing Hindi speech…", 0.42f)
@@ -236,6 +209,8 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
             val finalProcessedSegments = mutableListOf<TranslationSegment>()
             val totalSegs = translatedSegments.size.coerceAtLeast(1)
 
+            var runningGender = globalGenderResult.gender
+
             for (idx in translatedSegments.indices) {
                 val seg = translatedSegments[idx]
                 val progressStep = 0.72f + (0.24f * (idx.toFloat() / totalSegs.toFloat()))
@@ -249,12 +224,15 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 val endSample   = ((seg.endMs * 16000) / 1000).toInt().coerceIn(startSample, result.mono.size)
                 val segPcm      = if (endSample > startSample) result.mono.copyOfRange(startSample, endSample) else ShortArray(0)
 
-                // Detect gender specifically for this sentence segment
-                val segGenderRes = genderDetector.detectGender(segPcm, fallbackGender = globalGenderResult.gender)
+                // Detect gender specifically for this sentence segment (fallback to runningGender if insufficient frames)
+                val segGenderRes = genderDetector.detectGender(segPcm, fallbackGender = runningGender)
                 val segmentGender = segGenderRes.gender
+                runningGender = segmentGender // Carry over for short/unvoiced segments
 
-                Log.d(TAG, "Segment [$idx] (${seg.startMs}ms -> ${seg.endMs}ms): " +
-                        "Pitch=${"%.1f".format(segGenderRes.medianF0)} Hz, Gender=$segmentGender")
+                Log.d(TAG, "SEGMENT GENDER LOG [$idx] (${seg.startMs}ms -> ${seg.endMs}ms):\n" +
+                        "   Voiced Frames: ${segGenderRes.totalVoicedFrames}\n" +
+                        "   Computed F0:   ${if (segGenderRes.isCarriedOver) "Insufficient data (Carried Over from $segmentGender)" else "${"%.1f".format(segGenderRes.medianF0)} Hz"}\n" +
+                        "   Resulting Gender: $segmentGender")
 
                 val targetDurationMs = (seg.endMs - seg.startMs).coerceAtLeast(300L)
 
