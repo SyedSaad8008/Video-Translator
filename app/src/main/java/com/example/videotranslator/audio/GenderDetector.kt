@@ -10,8 +10,13 @@ private const val SAMPLE_RATE = 16_000
 /**
  * DSP Pitch (F0) Estimator & Per-Segment Gender Classifier.
  *
- * Uses subharmonic pitch-period autocorrelation over ~30ms frames of 16kHz mono PCM speech audio.
- * Supports analyzing full audio tracks or individual sentence segment PCM slices.
+ * Implements YIN Normalized Autocorrelation:
+ *  1. Splits audio into 30ms frames (480 samples) with 15ms hop (240 samples).
+ *  2. Filters out unvoiced / silent frames with RMS energy below threshold.
+ *  3. Computes normalized autocorrelation over lag range 45..213 (75Hz to 350Hz).
+ *  4. Identifies candidate pitch peaks r(k) >= 0.30.
+ *  5. Selects the primary fundamental pitch peak T0 (preventing harmonic doubling & subharmonic lowering).
+ *  6. Classifies median F0 < 165Hz as MALE, >= 165Hz as FEMALE.
  */
 class GenderDetector {
 
@@ -45,49 +50,57 @@ class GenderDetector {
             }
             val rms = sqrt(sumSq / frameSize)
 
-            // Voiced frame energy threshold check
+            // Skip silent/unvoiced frames (RMS threshold)
             if (rms >= 120.0) {
                 val lags = IntArray(maxLag - minLag + 1)
-                val autocorrValues = DoubleArray(maxLag - minLag + 1)
-                var maxVal = -1.0
+                val normAutocorr = DoubleArray(maxLag - minLag + 1)
 
                 for (idx in lags.indices) {
                     val lag = minLag + idx
                     lags[idx] = lag
-                    var autocorr = 0.0
+                    var c = 0.0
+                    var rLag = 0.0
                     for (i in 0 until (frameSize - lag)) {
-                        autocorr += pcmMono[offset + i].toDouble() * pcmMono[offset + i + lag].toDouble()
+                        val s1 = pcmMono[offset + i].toDouble()
+                        val s2 = pcmMono[offset + i + lag].toDouble()
+                        c += s1 * s2
+                        rLag += s2 * s2
                     }
-                    autocorrValues[idx] = autocorr
-                    if (autocorr > maxVal) {
-                        maxVal = autocorr
+                    val denom = sqrt(sumSq * rLag)
+                    normAutocorr[idx] = if (denom > 0) c / denom else 0.0
+                }
+
+                // Find local peaks in normalized autocorrelation >= 0.30
+                val peakLags = mutableListOf<Int>()
+                val peakVals = mutableListOf<Double>()
+
+                for (i in 1 until normAutocorr.size - 1) {
+                    val v = normAutocorr[i]
+                    if (v >= 0.30 && v > normAutocorr[i - 1] && v > normAutocorr[i + 1]) {
+                        peakLags.add(lags[i])
+                        peakVals.add(v)
                     }
                 }
 
-                if (maxVal > 0) {
-                    val thresh = maxVal * 0.65
-                    val peakIndices = mutableListOf<Int>()
+                if (peakVals.isNotEmpty()) {
+                    val maxPeakVal = peakVals.maxOrNull() ?: 0.0
+                    val thresh = maxPeakVal * 0.70
 
-                    for (i in 1 until autocorrValues.size - 1) {
-                        val v = autocorrValues[i]
-                        if (v >= thresh && v > autocorrValues[i - 1] && v > autocorrValues[i + 1]) {
-                            peakIndices.add(i)
+                    // Pick the FIRST peak (smallest lag / highest true fundamental frequency)
+                    // among candidate peaks reaching at least 70% of max peak strength.
+                    var bestLag = -1
+                    for (k in peakLags.indices) {
+                        if (peakVals[k] >= thresh) {
+                            bestLag = peakLags[k]
+                            break
                         }
                     }
 
-                    val bestLag = if (peakIndices.isNotEmpty()) {
-                        peakIndices.maxOf { lags[it] }
-                    } else {
-                        var topIdx = 0
-                        for (i in autocorrValues.indices) {
-                            if (autocorrValues[i] > autocorrValues[topIdx]) topIdx = i
+                    if (bestLag > 0) {
+                        val frameF0 = SAMPLE_RATE.toFloat() / bestLag.toFloat()
+                        if (frameF0 in 75.0f..450.0f) {
+                            f0Estimates.add(frameF0)
                         }
-                        lags[topIdx]
-                    }
-
-                    val frameF0 = SAMPLE_RATE.toFloat() / bestLag.toFloat()
-                    if (frameF0 in 75.0f..450.0f) {
-                        f0Estimates.add(frameF0)
                     }
                 }
             }
@@ -110,7 +123,7 @@ class GenderDetector {
         // Cutoff: < 165Hz -> MALE, >= 165Hz -> FEMALE
         val classifiedGender = if (medianF0 < 165.0f) Gender.MALE else Gender.FEMALE
 
-        Log.d(TAG, "Segment Pitch Detection Result: medianF0=${"%.1f".format(medianF0)} Hz, " +
+        Log.d(TAG, "YIN Gender Detection Result: medianF0=${"%.1f".format(medianF0)} Hz, " +
                 "voicedFrames=${f0Estimates.size}, classifiedGender=$classifiedGender")
 
         return DetectionResult(medianF0, classifiedGender, f0Estimates.size)
