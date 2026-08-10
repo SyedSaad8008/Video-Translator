@@ -214,8 +214,8 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
             if (result.instrumental != null) instrumental.loadFromFile(instrumentalFile)
 
-            // ── 2b. DSP Spectral Subtraction Noise Suppression ───────────
-            _processingState.value = ProcessingState.Loading("Applying DSP spectral noise suppression…", 0.22f)
+            // ── 2b. Multi-Segment Adaptive DSP Noise Suppression ─────────
+            _processingState.value = ProcessingState.Loading("Applying adaptive DSP noise suppression…", 0.22f)
             val cleanedMono = noiseSuppressor.suppressNoise(result.mono)
 
             // ── 2c. Global Voice Gender Detection (Baseline) ──────────────
@@ -233,11 +233,11 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
             _processingState.value = ProcessingState.Loading("Loading neural translation models…", 0.58f)
             translationManager.downloadModels()
 
-            // ── 5. Sentence-level translation ─────────────────────────
-            _processingState.value = ProcessingState.Loading("Translating speech into English & Telugu…", 0.72f)
+            // ── 5. Two-Tier Contextual Sentence Translation ───────────
+            _processingState.value = ProcessingState.Loading("Translating full sentence context into English & Telugu…", 0.72f)
             val translatedSegments = translationManager.translate(rawSegments)
 
-            // ── 5b. Per-Segment Gender Analysis & Duration-Matched TTS Pre-Rendering ─
+            // ── 5b. Multi-Pass Gender Analysis & Duration-Matched TTS Pre-Rendering ─
             val renderedDir = cache.renderedAudioDir(uri)
             val finalProcessedSegments = mutableListOf<TranslationSegment>()
             val totalSegs = translatedSegments.size.coerceAtLeast(1)
@@ -248,7 +248,7 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 val seg = translatedSegments[idx]
                 val progressStep = 0.72f + (0.24f * (idx.toFloat() / totalSegs.toFloat()))
                 _processingState.value = ProcessingState.Loading(
-                    "Analyzing segment speaker tone & pre-rendering audio (${idx + 1}/$totalSegs)…",
+                    "Analyzing speaker tone & pre-rendering audio (${idx + 1}/$totalSegs)…",
                     progressStep
                 )
 
@@ -257,13 +257,20 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 val endSample   = ((seg.endMs * 16000) / 1000).toInt().coerceIn(startSample, cleanedMono.size)
                 val segPcm      = if (endSample > startSample) cleanedMono.copyOfRange(startSample, endSample) else ShortArray(0)
 
-                // Detect gender specifically for this sentence segment
-                val segGenderRes = genderDetector.detectGender(segPcm, fallbackGender = runningGender)
+                // Detect gender specifically for this sentence segment with Multi-Pass analysis
+                val segGenderRes = genderDetector.detectGender(
+                    pcmMono = segPcm,
+                    fallbackGender = runningGender,
+                    fullPcmMono = cleanedMono,
+                    segmentStartMs = seg.startMs,
+                    segmentEndMs = seg.endMs
+                )
                 val segmentGender = segGenderRes.gender
                 runningGender = segmentGender
 
                 Log.d(TAG, "SEGMENT GENDER LOG [$idx] (${seg.startMs}ms -> ${seg.endMs}ms):\n" +
                         "   Voiced Frames: ${segGenderRes.totalVoicedFrames}\n" +
+                        "   Confidence:    ${"%.2f".format(segGenderRes.confidenceScore)}${if (segGenderRes.isPass2Triggered) " (Pass 2 Expanded Window Triggered)" else ""}\n" +
                         "   Computed F0:   ${if (segGenderRes.isCarriedOver) "Insufficient data (Carried Over from $segmentGender)" else "${"%.1f".format(segGenderRes.medianF0)} Hz"}\n" +
                         "   Resulting Gender: $segmentGender")
 
@@ -303,7 +310,7 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
             val totalPipelineMs = System.currentTimeMillis() - pipelineStart
             Log.d(TAG, "================ TOTAL PIPELINE EXECUTION TIME ================")
-            Log.d(TAG, "Completed full transcription, DSP noise reduction, translation, and TTS pre-rendering in ${"%.2f".format(totalPipelineMs / 1000.0)}s (Budget: 90.0s)")
+            Log.d(TAG, "Completed full Two-Tier pipeline in ${"%.2f".format(totalPipelineMs / 1000.0)}s (Allowed Budget: ~90.0s)")
             Log.d(TAG, "================================================================")
 
             startTtsPolling()

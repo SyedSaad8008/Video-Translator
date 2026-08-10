@@ -14,10 +14,10 @@ private const val OVER_SUBTRACTION = 1.6 // Over-subtraction factor alpha
 private const val SPECTRAL_FLOOR   = 0.05 // Spectral floor beta to prevent musical noise
 
 /**
- * High-Performance DSP Spectral Subtraction & Wiener Filter Noise Reducer.
+ * Multi-Segment Adaptive DSP Spectral Subtraction & Wiener Filter Noise Reducer.
  *
  *  1. Performs STFT over 512-sample overlapping frames with Hanning windowing.
- *  2. Scans silent/quiet stretches across the entire audio to build a noise profile spectrum |N(f)|.
+ *  2. Scans quiet stretches dynamically across multiple regions (start, middle, end) of the audio file to track non-stationary noise floors.
  *  3. Subtracts noise magnitude spectrum: |S(f)| = max(|X(f)| - alpha * |N(f)|, beta * |X(f)|).
  *  4. Reconstructs clean 16kHz PCM audio via Inverse FFT (IFFT) + Overlap-Add.
  */
@@ -48,17 +48,26 @@ class NoiseSuppressor {
             frameEnergies[f] = sqrt(sumSq / FFT_SIZE).toFloat()
         }
 
-        // Sort frame indices by energy to locate the quietest 12% frames
-        val sortedIndices = (0 until numFrames).sortedBy { frameEnergies[it] }
-        val numQuietFrames = max(1, numFrames / 8) // Lowest 12.5% energy frames
+        // Divide audio into 3 temporal regions (start, middle, end) to sample adaptive noise floor
+        val regionSize = numFrames / 3
+        val quietIndices = mutableListOf<Int>()
 
-        // 2. Build average noise spectrum profile |N(f)|
+        for (r in 0 until 3) {
+            val startIdx = r * regionSize
+            val endIdx = if (r == 2) numFrames else (r + 1) * regionSize
+            if (endIdx > startIdx) {
+                val regionQuiet = (startIdx until endIdx).sortedBy { frameEnergies[it] }
+                val takeCount = max(1, (endIdx - startIdx) / 8)
+                quietIndices.addAll(regionQuiet.take(takeCount))
+            }
+        }
+
+        // 2. Build multi-segment adaptive noise spectrum profile |N(f)|
         val noiseMagSum = DoubleArray(FFT_SIZE / 2 + 1)
         val realBuf = DoubleArray(FFT_SIZE)
         val imagBuf = DoubleArray(FFT_SIZE)
 
-        for (q in 0 until numQuietFrames) {
-            val fIdx = sortedIndices[q]
+        for (fIdx in quietIndices) {
             val offset = fIdx * HOP_SIZE
 
             for (i in 0 until FFT_SIZE) {
@@ -77,7 +86,7 @@ class NoiseSuppressor {
         }
 
         val noiseProfile = DoubleArray(FFT_SIZE / 2 + 1) { k ->
-            noiseMagSum[k] / numQuietFrames.toDouble()
+            noiseMagSum[k] / quietIndices.size.toDouble()
         }
 
         // 3. Spectral Subtraction & Overlap-Add Reconstruction
@@ -135,14 +144,11 @@ class NoiseSuppressor {
         }
 
         val elapsed = System.currentTimeMillis() - startTime
-        Log.d(TAG, "DSP Spectral Subtraction Noise Reduction complete: processed ${pcmMono.size} samples (${numFrames} frames) in ${elapsed}ms")
+        Log.d(TAG, "Multi-Segment Adaptive Spectral Subtraction complete: processed ${pcmMono.size} samples across ${quietIndices.size} quiet frames in ${elapsed}ms")
 
         return cleanedPcm
     }
 
-    /**
-     * In-place Radix-2 Cooley-Tukey Fast Fourier Transform (FFT).
-     */
     private fun fft(real: DoubleArray, imag: DoubleArray) {
         val n = real.size
         var j = 0
@@ -195,9 +201,6 @@ class NoiseSuppressor {
         }
     }
 
-    /**
-     * In-place Inverse Fast Fourier Transform (IFFT).
-     */
     private fun ifft(real: DoubleArray, imag: DoubleArray) {
         val n = real.size
         for (i in 0 until n) {
