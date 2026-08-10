@@ -129,14 +129,14 @@ The app maps detected speaker gender to verified Google TTS engine voice names f
 
 ### Assumptions
 - **Video Encodings**: Input video contains an audio track in standard container formats (MP4, MKV, WEBM, 3GP) with AAC, MP3, Opus, Vorbis, or AC3 audio.
-- **Single Dominant Speaker**: Gender detection estimates the overall median pitch across the video duration.
+- **Multi-Speaker Diarization**: Performs sentence-level PCM pitch analysis ($F_0$) to assign speaker gender on a per-segment basis (alternating Male and Female voices for multi-speaker dialogues).
 - **First-Run Connectivity**: Device has internet access during initial launch to download ML Kit translation models (~50 MB, downloaded once). Subsequent uses are 100% offline.
 - **Android Version**: Device runs API level 26 (Android 8.0) or higher.
 
 ### Implemented Architectural Solutions
 | Area / Requirement | Diagnostic Finding & Implemented Solution |
 |-------------------|------------------------------------------|
-| **Voice Gender Matching** | Extracted median $F_0$ pitch via autocorrelation ($146.8\text{ Hz}$ on sample video) $\rightarrow$ classified as **Male**. Automatically selects male Google TTS voices for English and Telugu. |
+| **Multi-Speaker Voice Gender Matching** | Performs subharmonic pitch period analysis ($F_0$) on each sentence's PCM slice $\rightarrow$ dynamically selects Male/Female Google TTS voices per segment (`en-us-x-tpd` Male, `te-in-x-teg` Male, `en-us-x-iob` Female, `te-in-x-tee` Female). |
 | **Lip Sync / Audio Duration Match** | Replaced live TTS streaming with pre-rendered `.wav` files and pitch-preserved speed scaling (`0.75x`–`1.5x`), synchronizing speech start/end with mouth movements. |
 | **5.1 Surround Sound Speech Extraction** | Re-engineered `AudioExtractor.kt` to downmix 5.1 surround sound audio with Center channel prioritization: `mono = FC * 0.50 + (FL + FR) * 0.25`. |
 | **Resampling Aliasing Noise** | Applied a 31-tap Blackman-windowed FIR low-pass filter ($f_c = 7200\text{ Hz}$) prior to decimation down to 16 kHz. |

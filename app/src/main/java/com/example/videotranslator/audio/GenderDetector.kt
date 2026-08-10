@@ -8,15 +8,10 @@ private const val TAG = "GenderDetector"
 private const val SAMPLE_RATE = 16_000
 
 /**
- * DSP Pitch (F0) Estimator & Gender Classifier.
+ * DSP Pitch (F0) Estimator & Per-Segment Gender Classifier.
  *
  * Uses subharmonic pitch-period autocorrelation over ~30ms frames of 16kHz mono PCM speech audio.
- *  1. Splits audio into 30ms frames (480 samples) with 15ms hop (240 samples).
- *  2. Filters out unvoiced / silent frames with RMS energy below threshold.
- *  3. Computes autocorrelation over lag range 45..213 (75Hz to 350Hz).
- *  4. Applies subharmonic pitch period peak selection (preventing 2x octave doubling).
- *  5. Takes the median pitch F0 across all voiced frames.
- *  6. Classifies median F0 < 165Hz as MALE, >= 165Hz as FEMALE.
+ * Supports analyzing full audio tracks or individual sentence segment PCM slices.
  */
 class GenderDetector {
 
@@ -26,17 +21,16 @@ class GenderDetector {
         val totalVoicedFrames: Int
     )
 
-    fun detectGender(pcmMono: ShortArray): DetectionResult {
+    fun detectGender(pcmMono: ShortArray, fallbackGender: Gender = Gender.MALE): DetectionResult {
         if (pcmMono.isEmpty()) {
-            Log.w(TAG, "PCM audio is empty -> defaulting to Gender.MALE")
-            return DetectionResult(0f, Gender.MALE, 0)
+            Log.w(TAG, "PCM audio is empty -> defaulting to fallback gender $fallbackGender")
+            return DetectionResult(0f, fallbackGender, 0)
         }
 
         val frameSize = (SAMPLE_RATE * 0.030).toInt() // 480 samples = 30ms
         val frameHop  = (SAMPLE_RATE * 0.015).toInt() // 240 samples = 15ms
 
         // Lag range corresponding to 75Hz - 350Hz at 16kHz
-        // f = sampleRate / lag -> minLag = 16000 / 350 = 45, maxLag = 16000 / 75 = 213
         val minLag = (SAMPLE_RATE / 350.0).toInt().coerceAtLeast(1) // 45
         val maxLag = (SAMPLE_RATE / 75.0).toInt().coerceAtMost(frameSize - 1) // 213
 
@@ -51,7 +45,7 @@ class GenderDetector {
             }
             val rms = sqrt(sumSq / frameSize)
 
-            // Voiced frame energy threshold check (skip silence/noise)
+            // Voiced frame energy threshold check
             if (rms >= 120.0) {
                 val lags = IntArray(maxLag - minLag + 1)
                 val autocorrValues = DoubleArray(maxLag - minLag + 1)
@@ -74,7 +68,6 @@ class GenderDetector {
                     val thresh = maxVal * 0.65
                     val peakIndices = mutableListOf<Int>()
 
-                    // Find local peaks above threshold
                     for (i in 1 until autocorrValues.size - 1) {
                         val v = autocorrValues[i]
                         if (v >= thresh && v > autocorrValues[i - 1] && v > autocorrValues[i + 1]) {
@@ -82,8 +75,6 @@ class GenderDetector {
                         }
                     }
 
-                    // Select the peak with the LARGEST lag (lowest fundamental frequency F0),
-                    // which prevents 2x harmonic octave doubling (e.g. 225Hz doubling -> 86.5Hz fundamental)!
                     val bestLag = if (peakIndices.isNotEmpty()) {
                         peakIndices.maxOf { lags[it] }
                     } else {
@@ -105,8 +96,8 @@ class GenderDetector {
         }
 
         if (f0Estimates.isEmpty()) {
-            Log.w(TAG, "No voiced frames detected in audio -> defaulting to Gender.MALE")
-            return DetectionResult(0f, Gender.MALE, 0)
+            Log.w(TAG, "No voiced frames in segment PCM slice -> fallback to $fallbackGender")
+            return DetectionResult(0f, fallbackGender, 0)
         }
 
         f0Estimates.sort()
@@ -116,10 +107,10 @@ class GenderDetector {
             f0Estimates[f0Estimates.size / 2]
         }
 
-        // Standard cutoff: < 165Hz -> Male, >= 165Hz -> Female
+        // Cutoff: < 165Hz -> MALE, >= 165Hz -> FEMALE
         val classifiedGender = if (medianF0 < 165.0f) Gender.MALE else Gender.FEMALE
 
-        Log.d(TAG, "DSP Gender Detection Result: medianF0=${"%.1f".format(medianF0)} Hz, " +
+        Log.d(TAG, "Segment Pitch Detection Result: medianF0=${"%.1f".format(medianF0)} Hz, " +
                 "voicedFrames=${f0Estimates.size}, classifiedGender=$classifiedGender")
 
         return DetectionResult(medianF0, classifiedGender, f0Estimates.size)

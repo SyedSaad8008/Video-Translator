@@ -11,7 +11,8 @@ enum class Gender {
 
 /**
  * One recognised speech segment with start/end timestamps (ms),
- * original Hindi text, translations, and pre-rendered audio file metadata.
+ * original Hindi text, translations, per-segment speaker gender,
+ * and pre-rendered audio file metadata.
  */
 @Serializable
 data class TranslationSegment(
@@ -23,7 +24,8 @@ data class TranslationSegment(
     val englishAudioPath: String = "",
     val englishSpeedRatio: Float = 1.0f,
     val teluguAudioPath: String = "",
-    val teluguSpeedRatio: Float = 1.0f
+    val teluguSpeedRatio: Float = 1.0f,
+    val gender: Gender = Gender.MALE
 )
 
 /** Target language for playback. */

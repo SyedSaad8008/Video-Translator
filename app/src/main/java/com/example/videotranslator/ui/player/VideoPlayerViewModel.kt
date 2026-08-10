@@ -8,7 +8,6 @@ import androidx.lifecycle.viewModelScope
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
-import com.example.videotranslator.R
 import com.example.videotranslator.audio.AudioExtractor
 import com.example.videotranslator.audio.GenderDetector
 import com.example.videotranslator.audio.InstrumentalPlayer
@@ -132,9 +131,6 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 return@launch
             }
             _processingState.value = ProcessingState.Idle
-
-            val sampleUri = Uri.parse("android.resource://${getApplication<Application>().packageName}/${R.raw.sample_video}")
-            onVideoPicked(sampleUri)
         }
 
         prewarmJob = viewModelScope.launch {
@@ -175,9 +171,28 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
     // ── Pipeline ──────────────────────────────────────────────────────────────
     private suspend fun runPipeline(uri: Uri) {
         try {
-            // Force clean pipeline run for diagnostic evaluation
-            cache.clearFor(uri)
+            // ── Cache hit validation ────────────────────────────────────
+            if (cache.isCached(uri)) {
+                cache.load(uri)?.let { cached ->
+                    val isValidCache = cached.isNotEmpty() && cached.all { seg ->
+                        seg.englishAudioPath.isNotBlank() && File(seg.englishAudioPath).exists() &&
+                        seg.teluguAudioPath.isNotBlank() && File(seg.teluguAudioPath).exists()
+                    }
 
+                    if (isValidCache) {
+                        Log.d(TAG, "Valid pre-rendered segment cache loaded: ${cached.size} segments")
+                        loadInstrumentalIfAvailable(uri)
+                        _processingState.value = ProcessingState.Ready
+                        startTtsPolling()
+                        return
+                    } else {
+                        Log.d(TAG, "Stale cache detected -> re-processing pipeline")
+                        cache.clearFor(uri)
+                    }
+                }
+            }
+
+            // ── 1. Wait for pre-warm ──────────────────────────────────
             _processingState.value = ProcessingState.Loading("Initializing AI models…", 0.05f)
             prewarmJob?.join()
 
@@ -186,54 +201,37 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
             val monoFile         = cache.pcmFileFor(uri)
             val instrumentalFile = cache.instrumentalFileFor(uri)
 
-            val result = audioExtractor.extractToFiles(uri, monoFile, instrumentalFile)
+            val result = if (monoFile.exists()) {
+                val mono  = audioExtractor.loadMonoFromCache(monoFile)
+                val instr = if (instrumentalFile.exists())
+                    audioExtractor.loadInstrumentalFromCache(instrumentalFile) else null
+                AudioExtractor.ExtractionResult(mono, instr)
+            } else {
+                audioExtractor.extractToFiles(uri, monoFile, instrumentalFile)
+            }
+
             if (result.instrumental != null) instrumental.loadFromFile(instrumentalFile)
 
-            // ── DIAGNOSTIC STEP 1: Pitch Estimation & Gender Detection ────────
-            _processingState.value = ProcessingState.Loading("Detecting speaker voice pitch & gender…", 0.28f)
-            val genderResult = genderDetector.detectGender(result.mono)
-            _detectedGender.value = genderResult.gender
-
-            Log.d(TAG, "================ DIAGNOSTIC STEP 1 REPORT ================")
-            Log.d(TAG, "Source Audio Voiced Frames: ${genderResult.totalVoicedFrames}")
-            Log.d(TAG, "Computed Median F0 Pitch:   ${"%.2f".format(genderResult.medianF0)} Hz")
-            Log.d(TAG, "Classified Speaker Gender:  ${genderResult.gender}")
-            Log.d(TAG, "==========================================================")
-
-            // ── DIAGNOSTIC STEP 3: Test Male vs Female Voice Selection Side-by-Side ─
-            Log.d(TAG, "================ DIAGNOSTIC STEP 3 SIDE-BY-SIDE EVALUATION ================")
-            ttsManager.selectVoiceForGender(Language.ENGLISH, Gender.MALE)
-            val maleEnVoice = ttsManager.selectedVoiceName
-            ttsManager.selectVoiceForGender(Language.ENGLISH, Gender.FEMALE)
-            val femaleEnVoice = ttsManager.selectedVoiceName
-
-            ttsManager.selectVoiceForGender(Language.TELUGU, Gender.MALE)
-            val maleTeVoice = ttsManager.selectedVoiceName
-            ttsManager.selectVoiceForGender(Language.TELUGU, Gender.FEMALE)
-            val femaleTeVoice = ttsManager.selectedVoiceName
-
-            Log.d(TAG, "English (en-US) Male Voice:   '$maleEnVoice'")
-            Log.d(TAG, "English (en-US) Female Voice: '$femaleEnVoice'")
-            Log.d(TAG, "English Voices Distinct:       ${maleEnVoice != femaleEnVoice}")
-
-            Log.d(TAG, "Telugu (te-IN) Male Voice:    '$maleTeVoice'")
-            Log.d(TAG, "Telugu (te-IN) Female Voice:  '$femaleTeVoice'")
-            Log.d(TAG, "Telugu Voices Distinct:        ${maleTeVoice != femaleTeVoice}")
-            Log.d(TAG, "==========================================================================")
+            // ── 2b. Global Voice Gender Detection (Baseline) ──────────────
+            _processingState.value = ProcessingState.Loading("Analyzing global audio pitch…", 0.28f)
+            val globalGenderResult = genderDetector.detectGender(result.mono)
+            _detectedGender.value = globalGenderResult.gender
+            Log.d(TAG, "Global Audio Gender: ${globalGenderResult.gender} (Median F0 = ${"%.1f".format(globalGenderResult.medianF0)} Hz)")
 
             // ── 3. Transcribe (Vosk) ───────────────────────────────────
             _processingState.value = ProcessingState.Loading("Transcribing Hindi speech…", 0.42f)
             val rawSegments = voskRecognizer.recognise(result.mono)
+            Log.d(TAG, "Vosk recognized ${rawSegments.size} Hindi segments")
 
             // ── 4. Download ML Kit translation models ─────────────────
-            _processingState.value = ProcessingState.Loading("Loading translation models…", 0.58f)
+            _processingState.value = ProcessingState.Loading("Loading neural translation models…", 0.58f)
             translationManager.downloadModels()
 
             // ── 5. Sentence-level translation ─────────────────────────
             _processingState.value = ProcessingState.Loading("Translating speech into English & Telugu…", 0.72f)
             val translatedSegments = translationManager.translate(rawSegments)
 
-            // ── 5b. PART B: Pre-Render Segment Audio & Duration Matching ─────────
+            // ── 5b. Per-Segment Gender Analysis & Duration-Matched TTS Pre-Rendering ─
             val renderedDir = cache.renderedAudioDir(uri)
             val finalProcessedSegments = mutableListOf<TranslationSegment>()
             val totalSegs = translatedSegments.size.coerceAtLeast(1)
@@ -242,23 +240,35 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 val seg = translatedSegments[idx]
                 val progressStep = 0.72f + (0.24f * (idx.toFloat() / totalSegs.toFloat()))
                 _processingState.value = ProcessingState.Loading(
-                    "Pre-rendering audio (Segment ${idx + 1}/$totalSegs)…",
+                    "Analyzing segment speaker tone & pre-rendering audio (${idx + 1}/$totalSegs)…",
                     progressStep
                 )
 
+                // Extract specific PCM audio slice for this segment
+                val startSample = ((seg.startMs * 16000) / 1000).toInt().coerceIn(0, result.mono.size)
+                val endSample   = ((seg.endMs * 16000) / 1000).toInt().coerceIn(startSample, result.mono.size)
+                val segPcm      = if (endSample > startSample) result.mono.copyOfRange(startSample, endSample) else ShortArray(0)
+
+                // Detect gender specifically for this sentence segment
+                val segGenderRes = genderDetector.detectGender(segPcm, fallbackGender = globalGenderResult.gender)
+                val segmentGender = segGenderRes.gender
+
+                Log.d(TAG, "Segment [$idx] (${seg.startMs}ms -> ${seg.endMs}ms): " +
+                        "Pitch=${"%.1f".format(segGenderRes.medianF0)} Hz, Gender=$segmentGender")
+
                 val targetDurationMs = (seg.endMs - seg.startMs).coerceAtLeast(300L)
 
-                // Render English audio
+                // Pre-render English audio with segment-matched gender voice
                 val enFile = File(renderedDir, "seg_${idx}_en.wav")
-                ttsManager.selectVoiceForGender(Language.ENGLISH, genderResult.gender)
+                ttsManager.selectVoiceForGender(Language.ENGLISH, segmentGender)
                 val enRenderedMs = ttsManager.synthesizeToFile(seg.english, enFile)
                 val enSpeedRatio = if (enRenderedMs > 0) {
                     (enRenderedMs.toFloat() / targetDurationMs.toFloat()).coerceIn(0.75f, 1.5f)
                 } else 1.0f
 
-                // Render Telugu audio
+                // Pre-render Telugu audio with segment-matched gender voice
                 val teFile = File(renderedDir, "seg_${idx}_te.wav")
-                ttsManager.selectVoiceForGender(Language.TELUGU, genderResult.gender)
+                ttsManager.selectVoiceForGender(Language.TELUGU, segmentGender)
                 val teRenderedMs = ttsManager.synthesizeToFile(seg.telugu, teFile)
                 val teSpeedRatio = if (teRenderedMs > 0) {
                     (teRenderedMs.toFloat() / targetDurationMs.toFloat()).coerceIn(0.75f, 1.5f)
@@ -266,6 +276,7 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
                 finalProcessedSegments.add(
                     seg.copy(
+                        gender = segmentGender,
                         englishAudioPath = enFile.absolutePath,
                         englishSpeedRatio = enSpeedRatio,
                         teluguAudioPath = teFile.absolutePath,
