@@ -19,6 +19,21 @@ import kotlin.coroutines.resume
 private const val TAG = "TtsManager"
 
 /**
+ * Detailed status data class describing device TTS voice availability.
+ */
+data class VoiceAvailabilityStatus(
+    val language: Language,
+    val locale: Locale,
+    val isLanguageSupported: Boolean,
+    val totalVoicesCount: Int,
+    val hasMaleVoice: Boolean,
+    val hasFemaleVoice: Boolean,
+    val hasGenderMatchedVoices: Boolean,
+    val isSingleVoiceOnly: Boolean,
+    val message: String
+)
+
+/**
  * Wraps Android TextToSpeech for gender-matched voice selection and file pre-rendering.
  */
 class TtsManager(private val context: Context) {
@@ -69,12 +84,102 @@ class TtsManager(private val context: Context) {
     }
 
     /**
+     * Diagnoses detailed voice availability and gender coverage for [language].
+     */
+    fun checkVoiceAvailability(language: Language): VoiceAvailabilityStatus {
+        val ttsEngine = tts
+        val targetLocale = when (language) {
+            Language.HINDI   -> Locale("hi", "IN")
+            Language.ENGLISH -> Locale.US
+            Language.TELUGU  -> Locale("te", "IN")
+        }
+
+        if (ttsEngine == null || !ready) {
+            return VoiceAvailabilityStatus(
+                language = language,
+                locale = targetLocale,
+                isLanguageSupported = false,
+                totalVoicesCount = 0,
+                hasMaleVoice = false,
+                hasFemaleVoice = false,
+                hasGenderMatchedVoices = false,
+                isSingleVoiceOnly = false,
+                message = "TTS engine is initializing..."
+            )
+        }
+
+        val availability = try {
+            ttsEngine.isLanguageAvailable(targetLocale)
+        } catch (e: Exception) {
+            TextToSpeech.LANG_NOT_SUPPORTED
+        }
+
+        val isSupported = availability != TextToSpeech.LANG_MISSING_DATA &&
+                          availability != TextToSpeech.LANG_NOT_SUPPORTED
+
+        if (!isSupported) {
+            return VoiceAvailabilityStatus(
+                language = language,
+                locale = targetLocale,
+                isLanguageSupported = false,
+                totalVoicesCount = 0,
+                hasMaleVoice = false,
+                hasFemaleVoice = false,
+                hasGenderMatchedVoices = false,
+                isSingleVoiceOnly = false,
+                message = "${language.displayName} TTS voice data is not installed on this device."
+            )
+        }
+
+        val availableVoices = try {
+            ttsEngine.voices?.filter { it.locale.language == targetLocale.language } ?: emptyList()
+        } catch (e: Exception) {
+            emptyList()
+        }
+
+        val maleKeywords = listOf("male", "-m-", "tpd", "end", "ena", "iom", "iol", "teg")
+        val femaleKeywords = listOf("female", "-f-", "iob", "tpc", "sfg", "enc", "iog", "tee")
+
+        val hasMale = availableVoices.any { v ->
+            val name = v.name.lowercase()
+            maleKeywords.any { kw -> name.contains(kw) }
+        }
+
+        val hasFemale = availableVoices.any { v ->
+            val name = v.name.lowercase()
+            femaleKeywords.any { kw -> name.contains(kw) }
+        }
+
+        val hasBoth = hasMale && hasFemale
+        val isSingleVoice = availableVoices.size <= 1 || (!hasMale || !hasFemale)
+
+        val msg = when {
+            hasBoth -> "${language.displayName} has distinct Male and Female voices installed."
+            availableVoices.size == 1 -> "${language.displayName} has only 1 voice installed on this device (no distinct male/female option)."
+            !hasMale -> "${language.displayName} is missing a dedicated Male voice."
+            !hasFemale -> "${language.displayName} is missing a dedicated Female voice."
+            else -> "${language.displayName} voice data is incomplete."
+        }
+
+        Log.d(TAG, "Voice Availability Diagnosis for ${language.displayName} ($targetLocale):\n" +
+                "   Supported: $isSupported, Total Voices: ${availableVoices.size}\n" +
+                "   Male: $hasMale, Female: $hasFemale, Both: $hasBoth, Message: \"$msg\"")
+
+        return VoiceAvailabilityStatus(
+            language = language,
+            locale = targetLocale,
+            isLanguageSupported = true,
+            totalVoicesCount = availableVoices.size,
+            hasMaleVoice = hasMale,
+            hasFemaleVoice = hasFemale,
+            hasGenderMatchedVoices = hasBoth,
+            isSingleVoiceOnly = isSingleVoice,
+            message = msg
+        )
+    }
+
+    /**
      * Selects a gender-matched voice for [language] and [gender].
-     * Uses a verified lookup table for Google TTS engine:
-     *  - English Male:   en-us-x-tpd-local / network, en-in-x-end-local / network, en-in-x-ena, en-us-x-iom
-     *  - English Female: en-us-x-iob-local / network, en-us-x-tpc-local / network, en-us-x-sfg, en-in-x-enc
-     *  - Telugu Male:    te-in-x-teg-local / network
-     *  - Telugu Female:  te-in-x-tee-local / network
      */
     fun selectVoiceForGender(language: Language, gender: Gender) {
         val ttsEngine = tts ?: return
@@ -168,7 +273,7 @@ class TtsManager(private val context: Context) {
                 selectedVoiceName = voiceAfter
                 isMissingVoice = false
 
-                Log.d(TAG, "SUCCESSFULLY ASSIGNED DEEP MALE VOICE for $language ($gender):\n" +
+                Log.d(TAG, "SUCCESSFULLY ASSIGNED VOICE for $language ($gender):\n" +
                         "   Requested: '${matchedVoice.name}'\n" +
                         "   Assigned:  '$voiceAfter'\n" +
                         "   Match Verified: ${voiceAfter == matchedVoice.name}")
@@ -179,8 +284,8 @@ class TtsManager(private val context: Context) {
             }
         } else {
             selectedVoiceName = "Default Locale Voice (Unmatched)"
-            isMissingVoice = true
-            Log.w(TAG, "No specific $gender voice found for $language -> surfaced warning card, fallback to '$voiceBefore'")
+            isMissingVoice = availableVoices.isEmpty()
+            Log.w(TAG, "No specific $gender voice found for $language -> fallback to default voice '$voiceBefore'")
         }
     }
 

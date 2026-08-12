@@ -1,6 +1,9 @@
 package com.example.videotranslator.ui.player
 
+import android.content.Intent
 import android.net.Uri
+import android.speech.tts.TextToSpeech
+import android.util.Log
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -22,6 +25,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -30,7 +34,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.core.view.WindowCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -40,6 +43,7 @@ import androidx.media3.ui.PlayerView
 import com.example.videotranslator.R
 import com.example.videotranslator.model.Language
 import com.example.videotranslator.model.ProcessingState
+import com.example.videotranslator.tts.VoiceAvailabilityStatus
 
 // ─────────────────────────── Design tokens ───────────────────────────────────
 private val BgDeep        = Color(0xFF080810)
@@ -67,8 +71,10 @@ fun VideoPlayerScreen(
     val processingState by viewModel.processingState.collectAsStateWithLifecycle()
     val currentLanguage  by viewModel.currentLanguage.collectAsStateWithLifecycle()
     val missingVoice     by viewModel.missingVoiceWarning.collectAsStateWithLifecycle()
+    val voiceStatus      by viewModel.voiceAvailabilityStatus.collectAsStateWithLifecycle()
     val videoUri         by viewModel.videoUri.collectAsStateWithLifecycle()
     val lifecycleOwner   = LocalLifecycleOwner.current
+    val context          = LocalContext.current
 
     val videoPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.GetContent()
@@ -77,6 +83,7 @@ fun VideoPlayerScreen(
     DisposableEffect(lifecycleOwner) {
         val obs = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_PAUSE) viewModel.exoPlayer.pause()
+            if (event == Lifecycle.Event.ON_RESUME) viewModel.recheckVoiceAvailability()
         }
         lifecycleOwner.lifecycle.addObserver(obs)
         onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
@@ -87,24 +94,21 @@ fun VideoPlayerScreen(
             .fillMaxSize()
             .background(BgDeep)
     ) {
-        // Subtle ambient glow behind the content
         AmbientGlow()
 
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .statusBarsPadding()   // ← Fix: keep content below notification bar
+                .statusBarsPadding()
                 .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Spacer(Modifier.height(12.dp))
 
-            // ── Header ──────────────────────────────────────────────────────
             PremiumHeader()
 
             Spacer(Modifier.height(20.dp))
 
-            // ── Video area ───────────────────────────────────────────────────
             if (videoUri == null) {
                 PickerCard(onPick = { videoPicker.launch("video/*") })
             } else {
@@ -113,7 +117,6 @@ fun VideoPlayerScreen(
 
             Spacer(Modifier.height(18.dp))
 
-            // ── Processing state ─────────────────────────────────────────────
             AnimatedContent(
                 targetState = processingState,
                 transitionSpec = {
@@ -130,7 +133,6 @@ fun VideoPlayerScreen(
                 }
             }
 
-            // ── Language selector ────────────────────────────────────────────
             AnimatedVisibility(
                 visible = processingState == ProcessingState.Ready,
                 enter = fadeIn(tween(400)) + slideInVertically(tween(400)) { it / 2 },
@@ -150,17 +152,27 @@ fun VideoPlayerScreen(
 
             Spacer(Modifier.height(8.dp))
 
-            // ── Missing TTS voice warning ────────────────────────────────────
-            AnimatedVisibility(visible = missingVoice) {
-                MissingVoiceCard(currentLanguage)
+            // Active Remediation Missing Voice Prompt
+            AnimatedVisibility(visible = missingVoice && currentLanguage != Language.HINDI) {
+                VoiceRemediationCard(
+                    status = voiceStatus,
+                    language = currentLanguage,
+                    onInstallData = {
+                        try {
+                            val intent = Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA)
+                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            context.startActivity(intent)
+                        } catch (e: Exception) {
+                            Log.w("VideoPlayerScreen", "Unable to launch ACTION_INSTALL_TTS_DATA intent: ${e.message}")
+                        }
+                    }
+                )
             }
 
             Spacer(Modifier.height(32.dp))
         }
     }
 }
-
-// ─────────────────────────── Ambient glow ────────────────────────────────────
 
 @Composable
 private fun AmbientGlow() {
@@ -182,15 +194,12 @@ private fun AmbientGlow() {
     )
 }
 
-// ─────────────────────────── Header ──────────────────────────────────────────
-
 @Composable
 private fun PremiumHeader() {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp)
     ) {
-        // App Logo Icon
         Image(
             painter = painterResource(R.drawable.ic_app_logo),
             contentDescription = "LinguaPlay App Logo",
@@ -200,7 +209,6 @@ private fun PremiumHeader() {
             contentScale = ContentScale.Fit
         )
         Spacer(Modifier.height(8.dp))
-        // App name
         Text(
             text = "LINGUAPLAY",
             color = Ivory,
@@ -209,7 +217,6 @@ private fun PremiumHeader() {
             letterSpacing = 7.sp
         )
         Spacer(Modifier.height(4.dp))
-        // Subtitle — thin divider style
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center
@@ -241,78 +248,64 @@ private fun GoldDivider(width: Dp) {
     )
 }
 
-// ─────────────────────────── Picker card ─────────────────────────────────────
-
 @Composable
 private fun PickerCard(onPick: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .aspectRatio(16f / 9f)
-            .padding(horizontal = 14.dp)
+            .padding(horizontal = 16.dp)
             .clip(RoundedCornerShape(20.dp))
             .background(BgCard)
             .border(1.dp, BorderGold, RoundedCornerShape(20.dp))
-            .clickable { onPick() },
+            .clickable { onPick() }
+            .padding(vertical = 40.dp, horizontal = 24.dp),
         contentAlignment = Alignment.Center
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            // Film icon made from composables
-            FilmIcon()
+            Box(
+                modifier = Modifier
+                    .size(64.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Gold.copy(alpha = 0.08f))
+                    .border(1.dp, BorderGoldHi, RoundedCornerShape(16.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("✦", fontSize = 26.sp, color = Gold)
+            }
             Spacer(Modifier.height(16.dp))
             Text(
-                "Select a Video",
+                "Select Video from Device",
                 color = Ivory,
-                fontSize = 17.sp,
-                fontWeight = FontWeight.Light,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Normal,
                 letterSpacing = 1.sp
             )
             Spacer(Modifier.height(6.dp))
             Text(
-                "Tap to browse your gallery",
+                "Supports MP4, MKV, MOV • Offline AI Speech Translation",
                 color = IvoryDim,
-                fontSize = 12.sp,
-                letterSpacing = 0.5.sp
+                fontSize = 12.sp
             )
-            Spacer(Modifier.height(22.dp))
-            GoldPillButton(text = "Browse Gallery", onClick = onPick)
         }
     }
 }
-
-@Composable
-private fun FilmIcon() {
-    // Minimalist film strip icon using Box composables
-    Box(
-        modifier = Modifier
-            .size(54.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(Gold.copy(alpha = 0.12f))
-            .border(1.dp, BorderGoldHi, RoundedCornerShape(12.dp)),
-        contentAlignment = Alignment.Center
-    ) {
-        Text("▶", fontSize = 22.sp, color = Gold)
-    }
-}
-
-// ─────────────────────────── Video surface ───────────────────────────────────
 
 @Composable
 private fun VideoSurface(viewModel: VideoPlayerViewModel) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .aspectRatio(16f / 9f)
-            .padding(horizontal = 14.dp)
+            .padding(horizontal = 16.dp)
+            .height(230.dp)
             .clip(RoundedCornerShape(20.dp))
+            .background(Color.Black)
             .border(1.dp, BorderGold, RoundedCornerShape(20.dp))
     ) {
         AndroidView(
-            factory = { ctx ->
-                PlayerView(ctx).apply {
+            factory = { context ->
+                PlayerView(context).apply {
                     player = viewModel.exoPlayer
                     useController = true
-                    setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
                     layoutParams = FrameLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT
@@ -324,193 +317,140 @@ private fun VideoSurface(viewModel: VideoPlayerViewModel) {
     }
 }
 
-// ─────────────────────────── Processing card ─────────────────────────────────
+/** Luxury card with gold border */
+@Composable
+private fun LuxCard(
+    borderColor: Color = BorderGold,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(BgCard)
+            .border(1.dp, borderColor, RoundedCornerShape(18.dp))
+            .padding(16.dp),
+        content = content
+    )
+}
 
 @Composable
 private fun ProcessingCard(state: ProcessingState.Loading) {
-    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
-    val alpha by infiniteTransition.animateFloat(
-        initialValue = 0.6f, targetValue = 1.0f,
-        animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
-        label = "alpha"
-    )
-
-    LuxCard {
+    LuxCard(borderColor = BorderGoldHi) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            // Animated gold ring
             CircularProgressIndicator(
-                modifier = Modifier.size(32.dp),
-                color = Gold.copy(alpha = alpha),
-                trackColor = Gold.copy(alpha = 0.12f),
-                strokeWidth = 2.dp
+                progress = { state.progress },
+                modifier = Modifier.size(24.dp),
+                color = Gold,
+                strokeWidth = 2.5.dp
             )
             Spacer(Modifier.width(14.dp))
-            Column(modifier = Modifier.weight(1f)) {
+            Column {
                 Text(
                     state.step,
                     color = Ivory,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Light,
-                    letterSpacing = 0.3.sp
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Normal
                 )
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    "Results cached — runs once per video",
+                    "${(state.progress * 100).toInt()}% complete",
                     color = IvoryDim,
                     fontSize = 11.sp
                 )
             }
         }
-        if (state.progress >= 0f) {
-            Spacer(Modifier.height(12.dp))
-            LinearProgressIndicator(
-                progress = { state.progress },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(2.dp)
-                    .clip(RoundedCornerShape(1.dp)),
-                color = Gold,
-                trackColor = Gold.copy(alpha = 0.15f)
-            )
-        }
     }
 }
-
-// ─────────────────────────── Error card ──────────────────────────────────────
 
 @Composable
 private fun ErrorCard(message: String, onRetry: () -> Unit) {
-    LuxCard(borderColor = ErrorRed.copy(alpha = 0.3f)) {
-        Row(verticalAlignment = Alignment.Top) {
+    LuxCard(borderColor = ErrorRed.copy(alpha = 0.4f)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
                 Icons.Default.Warning,
-                contentDescription = null,
-                tint = ErrorRed.copy(alpha = 0.8f),
-                modifier = Modifier.size(18.dp).padding(top = 2.dp)
+                contentDescription = "Error",
+                tint = ErrorRed,
+                modifier = Modifier.size(22.dp)
             )
-            Spacer(Modifier.width(10.dp))
+            Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text("Processing Error", color = Ivory, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                Spacer(Modifier.height(3.dp))
-                Text(
-                    message,
-                    color = IvoryDim, fontSize = 12.sp,
-                    maxLines = 3, overflow = TextOverflow.Ellipsis
-                )
+                Text("Pipeline Error", color = ErrorRed, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text(message, color = IvoryDim, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
-        }
-        Spacer(Modifier.height(12.dp))
-        OutlinedButton(
-            onClick = onRetry,
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(10.dp),
-            colors = ButtonDefaults.outlinedButtonColors(contentColor = ErrorRed),
-            border = BorderStroke(1.dp, ErrorRed.copy(alpha = 0.4f))
-        ) {
-            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(15.dp))
-            Spacer(Modifier.width(6.dp))
-            Text("Retry", fontSize = 13.sp, letterSpacing = 1.sp)
+            IconButton(onClick = onRetry) {
+                Icon(Icons.Default.Refresh, contentDescription = "Retry", tint = Gold)
+            }
         }
     }
 }
 
-// ─────────────────────────── Language selector ───────────────────────────────
-
 @Composable
-private fun LanguageSelector(current: Language, onSelect: (Language) -> Unit) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
+private fun LanguageSelector(
+    currentLanguage: Language,
+    onLanguageSelected: (Language) -> Unit
+) {
+    LuxCard {
         Text(
-            "AUDIO LANGUAGE",
+            "SELECT AUDIO TRANSLATION",
             color = MutedWhite,
             fontSize = 10.sp,
-            letterSpacing = 3.sp,
-            fontWeight = FontWeight.Medium
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 2.sp
         )
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(12.dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Language.entries.forEach { lang ->
-                LanguagePill(
-                    language = lang,
-                    selected = lang == current,
-                    onClick = { onSelect(lang) },
-                    modifier = Modifier.weight(1f)
-                )
+                val isSelected = currentLanguage == lang
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (isSelected) GoldGradient else Brush.linearGradient(listOf(BgCardLight, BgCardLight)))
+                        .border(
+                            1.dp,
+                            if (isSelected) Gold else BorderGold,
+                            RoundedCornerShape(12.dp)
+                        )
+                        .clickable { onLanguageSelected(lang) }
+                        .padding(vertical = 12.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = lang.displayName,
+                        color = if (isSelected) Color(0xFF1A1000) else Ivory,
+                        fontSize = 13.sp,
+                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-private fun LanguagePill(
-    language: Language,
-    selected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val animSpec = tween<Float>(300)
-    val elevation by animateFloatAsState(if (selected) 8f else 0f, animSpec, label = "elev")
-
+private fun MusicHint(language: Language) {
+    if (language == Language.HINDI) return
     Box(
-        modifier = modifier
-            .clip(RoundedCornerShape(12.dp))
-            .then(
-                if (selected) Modifier.background(GoldGradient)
-                else Modifier
-                    .background(BgCard)
-                    .border(1.dp, BorderGoldHi, RoundedCornerShape(12.dp))
-            )
-            .clickable { onClick() }
-            .padding(vertical = 13.dp, horizontal = 6.dp),
-        contentAlignment = Alignment.Center
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(BgCard)
+            .border(1.dp, SuccessGreen.copy(alpha = 0.2f), RoundedCornerShape(10.dp))
+            .padding(horizontal = 14.dp, vertical = 9.dp)
     ) {
         Text(
-            text = language.displayName,
-            color = if (selected) Color(0xFF1A1000) else IvoryDim,
-            fontSize = 13.sp,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Light,
-            textAlign = TextAlign.Center,
-            letterSpacing = 0.5.sp
+            "♪  Background music preserved — translated voice overlaid",
+            color = SuccessGreen.copy(alpha = 0.75f),
+            fontSize = 11.sp,
+            letterSpacing = 0.2.sp
         )
     }
 }
-
-// ─────────────────────────── Music hint ──────────────────────────────────────
-
-@Composable
-private fun MusicHint(language: Language) {
-    AnimatedVisibility(
-        visible = language != Language.HINDI,
-        enter = fadeIn(tween(300)),
-        exit = fadeOut(tween(200))
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(Color(0xFF0D1F14))
-                .border(1.dp, SuccessGreen.copy(alpha = 0.2f), RoundedCornerShape(10.dp))
-                .padding(horizontal = 14.dp, vertical = 9.dp)
-        ) {
-            Text(
-                "♪  Background music preserved — translated voice overlaid",
-                color = SuccessGreen.copy(alpha = 0.75f),
-                fontSize = 11.sp,
-                letterSpacing = 0.2.sp
-            )
-        }
-    }
-}
-
-// ─────────────────────────── Change video button ─────────────────────────────
 
 @Composable
 private fun ChangeVideoButton(onClick: () -> Unit) {
@@ -535,68 +475,65 @@ private fun ChangeVideoButton(onClick: () -> Unit) {
     }
 }
 
-// ─────────────────────────── Missing voice ───────────────────────────────────
-
+/** Active Remediation Prompt for Missing or Single TTS Voices */
 @Composable
-private fun MissingVoiceCard(language: Language) {
+private fun VoiceRemediationCard(
+    status: VoiceAvailabilityStatus?,
+    language: Language,
+    onInstallData: () -> Unit
+) {
+    val messageText = status?.message ?: "No ${language.displayName} TTS voice installed."
+    val isSingleVoice = status?.isSingleVoiceOnly ?: true
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp)
-            .clip(RoundedCornerShape(10.dp))
+            .clip(RoundedCornerShape(14.dp))
             .background(Color(0xFF1F1400))
-            .border(1.dp, Gold.copy(alpha = 0.25f), RoundedCornerShape(10.dp))
-            .padding(12.dp)
+            .border(1.dp, Gold.copy(alpha = 0.4f), RoundedCornerShape(14.dp))
+            .padding(14.dp)
     ) {
-        Row(verticalAlignment = Alignment.Top) {
-            Text("⚠", fontSize = 14.sp, color = Gold)
-            Spacer(Modifier.width(10.dp))
-            Text(
-                "No ${language.displayName} TTS voice installed. " +
-                "Go to Settings → Accessibility → Text-to-speech to install it.",
-                color = Gold.copy(alpha = 0.8f),
-                fontSize = 12.sp,
-                lineHeight = 18.sp
-            )
+        Column {
+            Row(verticalAlignment = Alignment.Top) {
+                Text("⚠", fontSize = 16.sp, color = Gold)
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = if (isSingleVoice) "Limited Gender Voice Options" else "Missing TTS Voice Data",
+                        color = Gold,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "$messageText Installing official Google TTS voice packs adds distinct male & female voices (if available for this locale).",
+                        color = IvoryDim,
+                        fontSize = 11.5.sp,
+                        lineHeight = 17.sp
+                    )
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(GoldGradient)
+                        .clickable { onInstallData() }
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        text = "Install Voice Data",
+                        color = Color(0xFF1A1000),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
         }
-    }
-}
-
-// ─────────────────────────── Shared components ───────────────────────────────
-
-/** Luxury card with gold border */
-@Composable
-private fun LuxCard(
-    borderColor: Color = BorderGold,
-    content: @Composable ColumnScope.() -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
-            .background(BgCard)
-            .border(1.dp, borderColor, RoundedCornerShape(18.dp))
-            .padding(16.dp),
-        content = content
-    )
-}
-
-/** Gold gradient pill button */
-@Composable
-private fun GoldPillButton(text: String, onClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(50.dp))
-            .background(GoldGradient)
-            .clickable { onClick() }
-            .padding(horizontal = 28.dp, vertical = 11.dp)
-    ) {
-        Text(
-            text = text,
-            color = Color(0xFF1A1000),
-            fontSize = 13.sp,
-            fontWeight = FontWeight.SemiBold,
-            letterSpacing = 1.sp
-        )
     }
 }

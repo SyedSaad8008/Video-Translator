@@ -21,6 +21,7 @@ import com.example.videotranslator.model.TranslationSegment
 import com.example.videotranslator.stt.VoskSpeechRecognizer
 import com.example.videotranslator.translation.TranslationManager
 import com.example.videotranslator.tts.TtsManager
+import com.example.videotranslator.tts.VoiceAvailabilityStatus
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -63,6 +64,9 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
     private val _missingVoiceWarning = MutableStateFlow(false)
     val missingVoiceWarning: StateFlow<Boolean> = _missingVoiceWarning.asStateFlow()
+
+    private val _voiceAvailabilityStatus = MutableStateFlow<VoiceAvailabilityStatus?>(null)
+    val voiceAvailabilityStatus: StateFlow<VoiceAvailabilityStatus?> = _voiceAvailabilityStatus.asStateFlow()
 
     private val _videoUri = MutableStateFlow<Uri?>(null)
     val videoUri: StateFlow<Uri?> = _videoUri.asStateFlow()
@@ -132,6 +136,7 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 _processingState.value = ProcessingState.Error("TTS engine failed to initialise.")
                 return@launch
             }
+            recheckVoiceAvailability()
             _processingState.value = ProcessingState.Idle
         }
 
@@ -328,16 +333,22 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
         if (file.exists()) instrumental.loadFromFile(file)
     }
 
-    // ── Language switching ────────────────────────────────────────────────────
+    // ── Language switching & Voice re-check ────────────────────────────────────
     fun switchLanguage(language: Language) {
         if (_currentLanguage.value == language) return
         _currentLanguage.value = language
         segmentAudioPlayer.stop()
         ttsManager.selectVoiceForGender(language, _detectedGender.value)
-        _missingVoiceWarning.value = ttsManager.isMissingVoice
+        recheckVoiceAvailability()
         applyVolumeForLanguage(language)
         lastSpokenIndex = -1
         if (_processingState.value == ProcessingState.Ready) startTtsPolling()
+    }
+
+    fun recheckVoiceAvailability() {
+        val status = ttsManager.checkVoiceAvailability(_currentLanguage.value)
+        _voiceAvailabilityStatus.value = status
+        _missingVoiceWarning.value = !status.hasGenderMatchedVoices
     }
 
     private fun applyVolumeForLanguage(lang: Language) {
