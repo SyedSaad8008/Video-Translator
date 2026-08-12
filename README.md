@@ -1,6 +1,6 @@
 # Video Translator (LinguaPlay) 🎬💬
 
-A native Android application that automatically translates Hindi video dialogue into **English** and **Telugu** while preserving the speaker's male/female voice tone, matching speech timing, and keeping the original background music track intact.
+A native Android application built with Kotlin and Jetpack Compose that automatically translates Hindi video dialogue into **English** and **Telugu** while preserving the speaker's male/female voice tone, matching speech timing, and keeping the original background music track intact.
 
 ---
 
@@ -88,6 +88,48 @@ flowchart LR
 
 ---
 
+## 🛠️ How to Build and Run the Application
+
+### 📋 Prerequisites
+1. **Android Studio**: Android Studio Koala / Ladybug / Jellyfish (2024.1+).
+2. **JDK Version**: Java 17 (OpenJDK 17).
+3. **Android SDK**: API Level 34 (Android 14) SDK installed.
+4. **Physical Device / Emulator**: Android 8.0+ (API Level 26+) device with USB Debugging enabled.
+
+### 📥 1. Clone the Repository
+```bash
+git clone https://github.com/SyedSaad8008/Video-Translator.git
+cd Video-Translator
+```
+
+### 🏗️ 2. Build the Debug APK via Command Line
+Run Gradle wrapper to assemble the debug APK:
+- **Windows (PowerShell/CMD)**:
+  ```powershell
+  .\gradlew.bat assembleDebug
+  ```
+- **macOS / Linux**:
+  ```bash
+  ./gradlew assembleDebug
+  ```
+The compiled APK will be output at:
+`app/build/outputs/apk/debug/app-debug.apk`
+
+### 📲 3. Install and Launch on Device
+Connect your Android phone via USB (with USB Debugging enabled) and run:
+```bash
+adb install -r -d app/build/outputs/apk/debug/app-debug.apk
+adb shell am start -n com.example.videotranslator/.MainActivity
+```
+
+### 🚀 4. How to Use the App
+1. Open **LinguaPlay (Video Translator)**.
+2. Tap **"Select Video from Device"** and pick any MP4/MKV video containing Hindi speech.
+3. Wait for the initial AI processing ($\sim50-65\text{s}$) to extract audio, apply noise reduction, transcribe speech, translate sentences, and synthesize gender-matched voices.
+4. Switch between **English** and **Telugu** audio tracks instantly using the language selector pill buttons!
+
+---
+
 ## ⚡ Performance Summary
 
 | Action | Execution Time | Note |
@@ -98,11 +140,12 @@ flowchart LR
 
 ---
 
-## 📱 System Requirements
+## 📱 System Requirements & Notes
 
 - **Android Version**: Android 8.0 (API Level 26) or higher.
 - **Supported Languages**: Hindi (Source Audio) $\rightarrow$ English & Telugu (Target Dubs).
 - **TTS Engine**: Google Speech Services (pre-installed on standard Android devices).
+- **Voice Remediation**: Includes an active in-app prompt launching `ACTION_INSTALL_TTS_DATA` if a device lacks installed voice packs.
 
 ---
 
