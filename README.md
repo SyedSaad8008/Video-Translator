@@ -1,91 +1,108 @@
 # Video Translator (LinguaPlay) 🎬💬
 
-A native Android app built with Kotlin and Jetpack Compose that automatically translates speech in videos from **Hindi** into **English** and **Telugu** while keeping the speaker's male/female tone, matching speech timing, and preserving original background music.
+A native Android application that automatically translates Hindi video dialogue into **English** and **Telugu** while preserving the speaker's male/female voice tone, matching speech timing, and keeping the original background music track intact.
 
 ---
 
-## 🧭 How It Works (Step-by-Step Architecture)
+## 🧭 Visual System Architecture
 
-The diagram below shows how a video flows through the 4 main stages of our translation pipeline:
+Here is how a video is processed from raw input to fully dubbed output:
 
 ```mermaid
-flowchart TD
-    %% Stage 1: Audio Extraction & Cleaning
-    subgraph Stage1 ["Stage 1: Audio Extraction & Cleaning"]
-        A[Input Video MP4/MKV] --> B[Extract Raw Audio]
-        B --> C[Separate Speech & Background Music]
-        C --> D[DSP Spectral Noise Filter]
+flowchart LR
+    %% Inputs
+    VIDEO["🎬 Input Video<br>(Hindi Speech + Music)"]
+
+    %% Phase 1: Audio Processing
+    subgraph P1 ["1️⃣ Audio Extraction & Filtering"]
+        direction TB
+        EXTRACT["🔊 Separate Audio Tracks"]
+        MUSIC["🎵 Preserved Music Track"]
+        SPEECH["🎙️ Raw Speech PCM"]
+        NOISE["🧹 DSP Spectral Noise Filter"]
+
+        EXTRACT --> MUSIC
+        EXTRACT --> SPEECH
+        SPEECH --> NOISE
     end
 
-    %% Stage 2: STT & Pitch Analysis
-    subgraph Stage2 ["Stage 2: Speech & Speaker Analysis"]
-        D --> E[Vosk Offline Hindi STT]
-        D --> F[YIN Pitch & Gender Detector]
-        E --> G[Recognized Hindi Sentences]
-        F --> H[Classified Male/Female Speaker Tone]
+    %% Phase 2: AI Speech & Pitch Analysis
+    subgraph P2 ["2️⃣ AI Speech & Tone Analysis"]
+        direction TB
+        STT["🗣️ Vosk Offline STT<br>(Recognizes Hindi Words)"]
+        PITCH["📊 YIN Pitch Detector<br>(Male vs Female F0 Tone)"]
     end
 
-    %% Stage 3: Two-Tier Translation
-    subgraph Stage3 ["Stage 3: Contextual Translation"]
-        G --> I[Group Sentences for Full Context]
-        I --> J[ML Kit Neural Machine Translation]
-        J --> K[Map Translations to Audio Segments]
+    %% Phase 3: Smart Translation
+    subgraph P3 ["3️⃣ Neural Translation"]
+        direction TB
+        CLUSTER["🧩 Full-Sentence Grouping<br>(Contextual Grammar)"]
+        TRANSLATE["🤖 ML Kit Engine<br>(Translates to EN & TE)"]
+
+        CLUSTER --> TRANSLATE
     end
 
-    %% Stage 4: Voice Synthesis & Video Playback
-    subgraph Stage4 ["Stage 4: Voice Pre-Rendering & Sync"]
-        H --> L[Select Male / Female TTS Voice]
-        K --> L
-        L --> M[Pre-render Speech WAV Files]
-        M --> N[Match Speech Duration & Speed]
-        N --> O[Sync ExoPlayer Video + Overlay Audio]
+    %% Phase 4: Voice Synthesis & Video Playback
+    subgraph P4 ["4️⃣ Dubbed Audio & Video Sync"]
+        direction TB
+        VOICE["🎭 Select TTS Voice<br>(Male or Female Match)"]
+        TTS["🔊 Pre-Render Speech WAV"]
+        SPEED["⏱️ Lip-Sync Speed Match<br>(0.75x to 1.5x)"]
+        PLAYBACK["▶️ ExoPlayer Sync<br>(Dubbed Voice + Music)"]
+
+        VOICE --> TTS
+        TTS --> SPEED
+        SPEED --> PLAYBACK
     end
+
+    %% Main Pipeline Flow
+    VIDEO --> EXTRACT
+    NOISE --> STT
+    NOISE --> PITCH
+    STT --> CLUSTER
+    TRANSLATE --> VOICE
+    PITCH --> VOICE
+    MUSIC ==> PLAYBACK
 ```
 
 ---
 
-## ⭐ Core Features
+## 💡 How Each Phase Works
 
-### 1. 🎵 Background Music Preservation
-* **Keeps Original Reverb & Instrumental Track**: Extracts speech onto a separate mono channel while isolating the background music track so translated dialogue sounds like a professional dub.
+### 1️⃣ Audio Extraction & Cleaning
+- **Background Music Preservation**: Splits speech dialogue from background music so original soundtracks and sound effects are retained in the final video.
+- **DSP Noise Filtering**: Uses a 512-point Short-Time Fourier Transform (STFT) spectral noise filter to remove room noise and background hiss before recognition.
 
-### 2. 🧹 Smart DSP Spectral Noise Suppression
-* **Removes Background Hiss & Room Noise**: Applies a 512-point Short-Time Fourier Transform (STFT) noise filter across quiet stretches to clean the audio before speech recognition and pitch analysis.
+### 2️⃣ Speech Recognition & Speaker Pitch Analysis
+- **High-Precision Offline STT**: Uses the Vosk Hindi acoustic model to transcribe spoken words locally without internet.
+- **Pitch-Based Gender Detection**: Uses YIN normalized autocorrelation to measure fundamental vocal pitch ($F_0$), identifying whether the speaker is Male ($<165\text{ Hz}$) or Female ($\ge165\text{ Hz}$).
 
-### 3. 🎙️ Per-Segment Gender Detection
-* **Identifies Male vs. Female Voices**: Evaluates fundamental pitch ($F_0$) for each spoken sentence to select a matching deep male voice (`en-us-x-tpd` / `te-in-x-teg`) or female voice (`en-us-x-iob` / `te-in-x-tee`).
-* **Multi-Pass Confidence Scoring**: If speech is short or quiet, the app expands the analysis window ($\pm 250\text{ ms}$) to make sure the tone detection is accurate.
+### 3️⃣ Two-Tier Sentence Translation
+- **Full-Sentence Grammar Context**: Groups short phrase fragments into complete sentences before passing them to Google ML Kit, producing natural English and Telugu translations instead of choppy word-by-word dubs.
+- **Proportional Audio Mapping**: Maps translated full-sentence words back to precise audio time windows to preserve video sync.
 
-### 4. 💬 Two-Tier Full-Sentence Translation
-* **Natural Grammar & Flow**: Groups short phrase fragments into complete sentences before translating with Google ML Kit. This prevents choppy word-for-word translations while maintaining precise audio timing.
-
-### 5. ⏱️ Lip-Sync & Duration Speed Matching
-* **Keeps Dialogue In Sync**: Measures pre-rendered speech length and dynamically adjusts playback speed ($0.75\times$ to $1.5\times$) so translated sentences fit inside the original speaker's time window.
-
-### 6. ⚡ 100% Offline & Instant Caching
-* **No Internet Required**: Uses local Vosk STT models and ML Kit neural translation on device.
-* **Instant Repeat Playback**: First run takes $\sim55-70$ seconds to process. Repeat plays and language switches are instant ($<50\text{ ms}$).
-
-### 7. 🔔 In-App Voice Data Installer
-* **One-Click Remediation**: If your device lacks specific Hindi, English, or Telugu voice packs, the app prompts you with a direct **Install Voice Data** button that opens system settings.
+### 4️⃣ Gender-Matched Voice Synthesis & Timing Sync
+- **Gender-Matched Voice Selection**: Dubs male speakers with deep male voices (`en-us-x-tpd` / `te-in-x-teg`) and female speakers with clear female voices (`en-us-x-iob` / `te-in-x-tee`).
+- **Dynamic Lip-Sync Matching**: Adjusts speech playback speed ($0.75\times$ to $1.5\times$) so translated sentences complete at the exact moment the speaker finishes talking.
+- **Instant Caching**: First run takes $\sim55-70$ seconds. Repeat plays and language switches are instant ($<50\text{ ms}$).
 
 ---
 
-## ⚡ Performance & Processing Speed
+## ⚡ Performance Summary
 
-| Run Type | Processing Time | Description |
-|:---|:---:|:---|
-| **First Video Load** | **`~55 – 70 sec`** | Performs audio separation, noise filtering, speech recognition, translation, pitch detection, and pre-rendering. |
-| **Language Switch** | **`< 50 ms (Instant)`** | Swaps between English and Telugu immediately using cached pre-rendered WAV audio. |
-| **Repeat App Launch** | **`< 50 ms (Instant)`** | Loads previously rendered video translation directly from local app storage. |
+| Action | Execution Time | Note |
+|:---|:---:---|:---|
+| **First Video Load** | **`~55 – 70 seconds`** | Full extraction, noise filtering, AI translation, pitch analysis, and TTS pre-rendering. |
+| **Language Switch** | **`< 50 ms (Instant)`** | Swaps between English and Telugu instantly using local pre-rendered audio cache. |
+| **Re-opening App** | **`< 50 ms (Instant)`** | Loads previously translated video sessions directly from storage. |
 
 ---
 
-## 📱 Requirements & Compatibility
+## 📱 System Requirements
 
-- **Operating System**: Android 8.0 (API Level 26) or higher.
-- **Languages Supported**: Hindi (Source Speech) $\rightarrow$ English & Telugu (Target Dubbing).
-- **TTS Engine**: Google Speech Services (pre-installed on most Android devices).
+- **Android Version**: Android 8.0 (API Level 26) or higher.
+- **Supported Languages**: Hindi (Source Audio) $\rightarrow$ English & Telugu (Target Dubs).
+- **TTS Engine**: Google Speech Services (pre-installed on standard Android devices).
 
 ---
 
