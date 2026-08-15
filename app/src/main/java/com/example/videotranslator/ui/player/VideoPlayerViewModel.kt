@@ -14,6 +14,8 @@ import com.example.videotranslator.audio.InstrumentalPlayer
 import com.example.videotranslator.audio.NoiseSuppressor
 import com.example.videotranslator.audio.SegmentAudioPlayer
 import com.example.videotranslator.cache.SegmentCache
+import com.example.videotranslator.library.VideoLibraryRepository
+import com.example.videotranslator.library.VideoRun
 import com.example.videotranslator.model.Gender
 import com.example.videotranslator.model.Language
 import com.example.videotranslator.model.ProcessingState
@@ -33,6 +35,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 import java.util.Locale
+import java.util.UUID
 
 private const val TAG = "VideoPlayerVM"
 
@@ -48,6 +51,7 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
     // ── Dependencies ──────────────────────────────────────────────────────────
     private val cache              = SegmentCache(application)
+    private val libraryRepo        = VideoLibraryRepository(application)
     private val audioExtractor     = AudioExtractor(application)
     private val noiseSuppressor    = NoiseSuppressor()
     private val voskRecognizer     = VoskSpeechRecognizer(application)
@@ -90,6 +94,12 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
     private val _videoUri = MutableStateFlow<Uri?>(null)
     val videoUri: StateFlow<Uri?> = _videoUri.asStateFlow()
 
+    private val _currentRunId = MutableStateFlow<String?>(null)
+    val currentRunId: StateFlow<String?> = _currentRunId.asStateFlow()
+
+    private val _libraryRuns = MutableStateFlow<List<VideoRun>>(emptyList())
+    val libraryRuns: StateFlow<List<VideoRun>> = _libraryRuns.asStateFlow()
+
     private var pipelineJob: Job? = null
     private var ttsPollingJob: Job? = null
     private var prewarmJob: Job? = null
@@ -98,6 +108,8 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
     init {
         DiagnosticLogger.init(application)
         DiagnosticLogger.log(TAG, "VideoPlayerViewModel initialized.")
+
+        refreshLibrary()
 
         exoPlayer.repeatMode = Player.REPEAT_MODE_OFF
         exoPlayer.addListener(object : Player.Listener {
@@ -135,64 +147,115 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    // ── Video picking ─────────────────────────────────────────────────────────
+    fun refreshLibrary() {
+        viewModelScope.launch {
+            _libraryRuns.value = libraryRepo.getAllRuns()
+        }
+    }
+
+    // ── Video picking (Creates a brand-new unique run ID) ─────────────────────
     fun onVideoPicked(uri: Uri) {
-        DiagnosticLogger.log(TAG, "Video picked: $uri")
+        val newRunId = UUID.randomUUID().toString()
+        val title = uri.lastPathSegment?.replace(Regex("[^a-zA-Z0-9_.-]"), " ")?.take(30) ?: "Video Run"
+        DiagnosticLogger.log(TAG, "New video picked: $uri (RunId: $newRunId)")
+
+        val newRun = VideoRun(
+            runId = newRunId,
+            uriString = uri.toString(),
+            videoTitle = title,
+            timestampMs = System.currentTimeMillis(),
+            status = "Processing"
+        )
+        libraryRepo.saveRun(newRun)
+        refreshLibrary()
+
         pipelineJob?.cancel()
         ttsPollingJob?.cancel()
         segmentAudioPlayer.stop()
         instrumental.stop()
         lastSpokenIndex = -1
+
         _videoUri.value = uri
+        _currentRunId.value = newRunId
         _processingState.value = ProcessingState.Idle
 
         exoPlayer.setMediaItem(MediaItem.fromUri(uri))
         exoPlayer.prepare()
         applyVolumeForLanguage(_currentLanguage.value)
 
-        pipelineJob = viewModelScope.launch { runPipeline(uri) }
+        pipelineJob = viewModelScope.launch { runPipeline(uri, newRunId) }
+    }
+
+    // ── Load an existing run from persistent library ──────────────────────────
+    fun loadPastRun(run: VideoRun) {
+        DiagnosticLogger.log(TAG, "Loading past run from library: ${run.videoTitle} (${run.runId})")
+        pipelineJob?.cancel()
+        ttsPollingJob?.cancel()
+        segmentAudioPlayer.stop()
+        instrumental.stop()
+        lastSpokenIndex = -1
+
+        val uri = Uri.parse(run.uriString)
+        _videoUri.value = uri
+        _currentRunId.value = run.runId
+
+        exoPlayer.setMediaItem(MediaItem.fromUri(uri))
+        exoPlayer.prepare()
+        applyVolumeForLanguage(_currentLanguage.value)
+
+        viewModelScope.launch {
+            val cachedSegs = cache.loadRun(run.runId)
+            if (cachedSegs != null && cachedSegs.isNotEmpty()) {
+                val instrFile = cache.instrumentalFileForRun(run.runId)
+                if (instrFile.exists()) instrumental.loadFromFile(instrFile)
+                
+                _detectedGender.value = if (run.detectedGender == "FEMALE") Gender.FEMALE else Gender.MALE
+                _processingState.value = ProcessingState.Ready
+                startTtsPolling()
+                DiagnosticLogger.log(TAG, "Past run [${run.runId}] loaded instantly from cache ✓")
+            } else {
+                // If files missing, re-run pipeline for this runId
+                runPipeline(uri, run.runId)
+            }
+        }
+    }
+
+    fun deleteRun(runId: String) {
+        libraryRepo.deleteRun(runId)
+        refreshLibrary()
+        if (_currentRunId.value == runId) {
+            pipelineJob?.cancel()
+            ttsPollingJob?.cancel()
+            segmentAudioPlayer.stop()
+            instrumental.stop()
+            exoPlayer.stop()
+            _videoUri.value = null
+            _currentRunId.value = null
+            _processingState.value = ProcessingState.Idle
+        }
     }
 
     fun retryPipeline() {
         val uri = _videoUri.value ?: return
-        DiagnosticLogger.log(TAG, "User triggered retry for video: $uri")
+        val runId = _currentRunId.value ?: return
+        DiagnosticLogger.log(TAG, "User triggered retry for run [$runId]: $uri")
         pipelineJob?.cancel()
-        pipelineJob = viewModelScope.launch { runPipeline(uri) }
+        pipelineJob = viewModelScope.launch { runPipeline(uri, runId) }
     }
 
-    // ── Pipeline ──────────────────────────────────────────────────────────────
-    private suspend fun runPipeline(uri: Uri) {
+    // ── Pipeline Execution ────────────────────────────────────────────────────
+    private suspend fun runPipeline(uri: Uri, runId: String) {
         val pipelineStart = System.currentTimeMillis()
-        DiagnosticLogger.log(TAG, "Starting full pipeline execution for $uri")
+        DiagnosticLogger.log(TAG, "Starting full pipeline execution for run [$runId]: $uri")
         try {
-            // Check cache
-            if (cache.isCached(uri)) {
-                cache.load(uri)?.let { cached ->
-                    val isValidCache = cached.isNotEmpty() && cached.all { seg ->
-                        seg.englishAudioPath.isNotBlank() && File(seg.englishAudioPath).exists() &&
-                        seg.teluguAudioPath.isNotBlank() && File(seg.teluguAudioPath).exists()
-                    }
-
-                    if (isValidCache) {
-                        DiagnosticLogger.log(TAG, "Valid pre-rendered segment cache loaded: ${cached.size} segments")
-                        loadInstrumentalIfAvailable(uri)
-                        _processingState.value = ProcessingState.Ready
-                        startTtsPolling()
-                        return
-                    } else {
-                        cache.clearFor(uri)
-                    }
-                }
-            }
-
             // ── 1. Wait for pre-warm ──────────────────────────────────
             _processingState.value = ProcessingState.Loading("Initializing AI models…", 0.05f)
             prewarmJob?.join()
 
             // ── 2. Extract audio (mono + instrumental) ────────────────
             _processingState.value = ProcessingState.Loading("Extracting audio from video…", 0.15f)
-            val monoFile         = cache.pcmFileFor(uri)
-            val instrumentalFile = cache.instrumentalFileFor(uri)
+            val monoFile         = cache.pcmFileForRun(runId)
+            val instrumentalFile = cache.instrumentalFileForRun(runId)
 
             val result = if (monoFile.exists()) {
                 val mono  = audioExtractor.loadMonoFromCache(monoFile)
@@ -223,6 +286,8 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
             if (rawSegments.isEmpty()) {
                 val msg = "No spoken Hindi speech detected in this video. Please select a video with audible Hindi speech."
                 DiagnosticLogger.log(TAG, "Pipeline Stopped: $msg")
+                libraryRepo.getRun(runId)?.copy(status = "Error")?.let { libraryRepo.saveRun(it) }
+                refreshLibrary()
                 _processingState.value = ProcessingState.Error(msg)
                 return
             }
@@ -233,6 +298,8 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
             if (modelResult.isFailure) {
                 val err = modelResult.exceptionOrNull()?.message ?: "Translation model download failed."
                 DiagnosticLogger.log(TAG, "Pipeline Error: $err")
+                libraryRepo.getRun(runId)?.copy(status = "Error")?.let { libraryRepo.saveRun(it) }
+                refreshLibrary()
                 _processingState.value = ProcessingState.Error(err)
                 return
             }
@@ -242,7 +309,7 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
             val translatedSegments = translationManager.translate(rawSegments)
 
             // ── 5b. Multi-Pass Gender Analysis & Duration-Matched TTS Pre-Rendering ─
-            val renderedDir = cache.renderedAudioDir(uri)
+            val renderedDir = cache.renderedAudioDirForRun(runId)
             val finalProcessedSegments = mutableListOf<TranslationSegment>()
             val totalSegs = translatedSegments.size.coerceAtLeast(1)
 
@@ -312,12 +379,21 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
             // ── 6. Cache + publish ────────────────────────────────────
             _processingState.value = ProcessingState.Loading("Saving cached audio…", 0.98f)
-            cache.save(uri, finalProcessedSegments)
+            cache.saveRun(runId, finalProcessedSegments)
+
+            // Update persistent library run
+            libraryRepo.getRun(runId)?.copy(
+                status = "Ready",
+                segmentCount = finalProcessedSegments.size,
+                detectedGender = globalGenderResult.gender.name
+            )?.let { libraryRepo.saveRun(it) }
+            refreshLibrary()
+
             _processingState.value = ProcessingState.Ready
 
             val totalPipelineMs = System.currentTimeMillis() - pipelineStart
             DiagnosticLogger.log(TAG, "================ TOTAL PIPELINE EXECUTION TIME ================")
-            DiagnosticLogger.log(TAG, "Completed full Two-Tier pipeline in ${"%.2f".format(totalPipelineMs / 1000.0)}s")
+            DiagnosticLogger.log(TAG, "Completed full Two-Tier pipeline in ${"%.2f".format(totalPipelineMs / 1000.0)}s for run [$runId]")
             DiagnosticLogger.log(TAG, "================================================================")
 
             startTtsPolling()
@@ -325,14 +401,19 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            DiagnosticLogger.log(TAG, "Pipeline Exception", e)
+            DiagnosticLogger.log(TAG, "Pipeline Exception for run [$runId]", e)
+            libraryRepo.getRun(runId)?.copy(status = "Error")?.let { libraryRepo.saveRun(it) }
+            refreshLibrary()
             _processingState.value = ProcessingState.Error(e.localizedMessage ?: "Unknown pipeline execution error.")
         }
     }
 
     private fun loadInstrumentalIfAvailable(uri: Uri) {
-        val file = cache.instrumentalFileFor(uri)
-        if (file.exists()) instrumental.loadFromFile(file)
+        val runId = _currentRunId.value
+        if (runId != null) {
+            val file = cache.instrumentalFileForRun(runId)
+            if (file.exists()) instrumental.loadFromFile(file)
+        }
     }
 
     // ── Language switching & Voice re-check ────────────────────────────────────
@@ -340,8 +421,10 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
         if (_currentLanguage.value == language) return
         _currentLanguage.value = language
         segmentAudioPlayer.stop()
-        ttsManager.selectVoiceForGender(language, _detectedGender.value)
-        recheckVoiceAvailability()
+        viewModelScope.launch {
+            ttsManager.selectVoiceForGender(language, _detectedGender.value)
+            recheckVoiceAvailability()
+        }
         applyVolumeForLanguage(language)
         lastSpokenIndex = -1
         if (_processingState.value == ProcessingState.Ready) startTtsPolling()
@@ -369,9 +452,10 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
         ttsPollingJob = viewModelScope.launch {
             while (isActive) {
                 val currentLang = _currentLanguage.value
-                if (currentLang != Language.HINDI && exoPlayer.isPlaying) {
+                val runId = _currentRunId.value
+                if (currentLang != Language.HINDI && exoPlayer.isPlaying && runId != null) {
                     val pos = exoPlayer.currentPosition
-                    val segments = cache.load(_videoUri.value ?: Uri.EMPTY) ?: emptyList()
+                    val segments = cache.loadRun(runId) ?: emptyList()
 
                     val activeIdx = segments.indexOfFirst { seg ->
                         pos >= (seg.startMs - TRIGGER_TOLERANCE_MS) && pos <= (seg.endMs + TRIGGER_TOLERANCE_MS)

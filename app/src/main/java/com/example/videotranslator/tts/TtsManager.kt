@@ -9,6 +9,8 @@ import android.speech.tts.Voice
 import android.util.Log
 import com.example.videotranslator.model.Gender
 import com.example.videotranslator.model.Language
+import com.example.videotranslator.util.DiagnosticLogger
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -35,12 +37,17 @@ data class VoiceAvailabilityStatus(
 
 /**
  * Wraps Android TextToSpeech for gender-matched voice selection and file pre-rendering.
+ * Auto-initializes TTS engine immediately and provides fail-safe fallback synthesis so audio is never silent.
  */
 class TtsManager(private val context: Context) {
 
     private var tts: TextToSpeech? = null
-    private var ready = false
-    var isMissingVoice = false
+    @Volatile var isReady: Boolean = false
+        private set
+
+    private val initDeferred = CompletableDeferred<Boolean>()
+
+    var isMissingVoice: Boolean = false
         private set
 
     var currentGender: Gender = Gender.MALE
@@ -49,16 +56,36 @@ class TtsManager(private val context: Context) {
     var selectedVoiceName: String = "Default"
         private set
 
-    suspend fun initialise(): Boolean = suspendCancellableCoroutine { cont ->
-        tts = TextToSpeech(context) { status ->
-            ready = status == TextToSpeech.SUCCESS
-            if (ready) {
-                Log.d(TAG, "TTS Engine initialized successfully")
-                logAllDeviceVoices()
-            } else {
-                Log.e(TAG, "TTS Engine initialization failed with status=$status")
+    init {
+        initTtsEngine()
+    }
+
+    private fun initTtsEngine() {
+        try {
+            tts = TextToSpeech(context.applicationContext) { status ->
+                if (status == TextToSpeech.SUCCESS) {
+                    isReady = true
+                    DiagnosticLogger.log(TAG, "TTS Engine initialized successfully ✓")
+                    logAllDeviceVoices()
+                    initDeferred.complete(true)
+                } else {
+                    isReady = false
+                    DiagnosticLogger.log(TAG, "TTS Engine initialization failed with status=$status")
+                    initDeferred.complete(false)
+                }
             }
-            if (cont.isActive) cont.resume(ready)
+        } catch (e: Exception) {
+            DiagnosticLogger.log(TAG, "Failed to instantiate TextToSpeech", e)
+            initDeferred.complete(false)
+        }
+    }
+
+    private suspend fun ensureInitialized(): Boolean {
+        if (isReady) return true
+        return try {
+            initDeferred.await()
+        } catch (e: Exception) {
+            false
         }
     }
 
@@ -69,17 +96,17 @@ class TtsManager(private val context: Context) {
         val ttsEngine = tts ?: return
         try {
             val allVoices = ttsEngine.voices ?: emptySet()
-            Log.d(TAG, "================ ALL DEVICE TTS VOICES (${allVoices.size} total) ================")
+            DiagnosticLogger.log(TAG, "================ ALL DEVICE TTS VOICES (${allVoices.size} total) ================")
             for (v in allVoices) {
-                Log.d(
+                DiagnosticLogger.log(
                     TAG,
                     "VOICE: name='${v.name}', locale='${v.locale}', quality=${v.quality}, " +
                             "networkReq=${v.isNetworkConnectionRequired}, features=${v.features}"
                 )
             }
-            Log.d(TAG, "==================================================================")
+            DiagnosticLogger.log(TAG, "==================================================================")
         } catch (e: Exception) {
-            Log.e(TAG, "Error enumerating device voices: ${e.message}", e)
+            DiagnosticLogger.log(TAG, "Error enumerating device voices: ${e.message}", e)
         }
     }
 
@@ -87,14 +114,14 @@ class TtsManager(private val context: Context) {
      * Diagnoses detailed voice availability and gender coverage for [language].
      */
     fun checkVoiceAvailability(language: Language): VoiceAvailabilityStatus {
-        val ttsEngine = tts
         val targetLocale = when (language) {
             Language.HINDI   -> Locale("hi", "IN")
             Language.ENGLISH -> Locale.US
             Language.TELUGU  -> Locale("te", "IN")
         }
 
-        if (ttsEngine == null || !ready) {
+        val ttsEngine = tts
+        if (ttsEngine == null || !isReady) {
             return VoiceAvailabilityStatus(
                 language = language,
                 locale = targetLocale,
@@ -132,7 +159,9 @@ class TtsManager(private val context: Context) {
         }
 
         val availableVoices = try {
-            ttsEngine.voices?.filter { it.locale.language == targetLocale.language } ?: emptyList()
+            ttsEngine.voices?.filter { 
+                it.locale.language.equals(targetLocale.language, ignoreCase = true)
+            } ?: emptyList()
         } catch (e: Exception) {
             emptyList()
         }
@@ -158,10 +187,10 @@ class TtsManager(private val context: Context) {
             availableVoices.size == 1 -> "${language.displayName} has only 1 voice installed on this device (no distinct male/female option)."
             !hasMale -> "${language.displayName} is missing a dedicated Male voice."
             !hasFemale -> "${language.displayName} is missing a dedicated Female voice."
-            else -> "${language.displayName} voice data is incomplete."
+            else -> "${language.displayName} voice data is limited."
         }
 
-        Log.d(TAG, "Voice Availability Diagnosis for ${language.displayName} ($targetLocale):\n" +
+        DiagnosticLogger.log(TAG, "Voice Availability Diagnosis for ${language.displayName} ($targetLocale):\n" +
                 "   Supported: $isSupported, Total Voices: ${availableVoices.size}\n" +
                 "   Male: $hasMale, Female: $hasFemale, Both: $hasBoth, Message: \"$msg\"")
 
@@ -181,9 +210,9 @@ class TtsManager(private val context: Context) {
     /**
      * Selects a gender-matched voice for [language] and [gender].
      */
-    fun selectVoiceForGender(language: Language, gender: Gender) {
+    suspend fun selectVoiceForGender(language: Language, gender: Gender) {
+        if (!ensureInitialized()) return
         val ttsEngine = tts ?: return
-        if (!ready) return
 
         currentGender = gender
         val targetLocale = when (language) {
@@ -192,13 +221,18 @@ class TtsManager(private val context: Context) {
             Language.TELUGU  -> Locale("te", "IN")
         }
 
-        val langResult = ttsEngine.setLanguage(targetLocale)
+        val langResult = try {
+            ttsEngine.setLanguage(targetLocale)
+        } catch (e: Exception) {
+            TextToSpeech.LANG_NOT_SUPPORTED
+        }
+
         isMissingVoice = langResult == TextToSpeech.LANG_MISSING_DATA ||
                          langResult == TextToSpeech.LANG_NOT_SUPPORTED
 
         if (isMissingVoice) {
-            Log.w(TAG, "TTS voice missing for $targetLocale")
-            selectedVoiceName = "Default (Missing Data)"
+            DiagnosticLogger.log(TAG, "TTS voice missing for $targetLocale -> will use default engine fallback")
+            selectedVoiceName = "Default Fallback"
             return
         }
 
@@ -208,15 +242,14 @@ class TtsManager(private val context: Context) {
         }
 
         val availableVoices = try {
-            ttsEngine.voices?.filter { it.locale.language == targetLocale.language } ?: emptyList()
+            ttsEngine.voices?.filter { 
+                it.locale.language.equals(targetLocale.language, ignoreCase = true)
+            } ?: emptyList()
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to query tts.voices: ${e.message}")
             emptyList()
         }
 
-        Log.d(TAG, "Found ${availableVoices.size} candidate voices for locale '${targetLocale}' (${language}):")
-
-        // 1. Verified Deep Google TTS Voice Lookup Table
+        // 1. Preferred Voice Names Lookup
         val preferredVoiceNames = when (language) {
             Language.ENGLISH -> if (gender == Gender.MALE) {
                 listOf(
@@ -236,13 +269,9 @@ class TtsManager(private val context: Context) {
                 )
             }
             Language.TELUGU -> if (gender == Gender.MALE) {
-                listOf(
-                    "te-in-x-teg-local", "te-in-x-teg-network"
-                )
+                listOf("te-in-x-teg-local", "te-in-x-teg-network")
             } else {
-                listOf(
-                    "te-in-x-tee-local", "te-in-x-tee-network"
-                )
+                listOf("te-in-x-tee-local", "te-in-x-tee-network")
             }
             else -> emptyList()
         }
@@ -263,29 +292,19 @@ class TtsManager(private val context: Context) {
             }
         }
 
-        val voiceBefore = ttsEngine.voice?.name ?: "null"
-
-        // 3. Set voice and inspect actual assigned Voice object
+        // 3. Set voice or keep language default
         if (matchedVoice != null) {
             try {
                 ttsEngine.voice = matchedVoice
-                val voiceAfter = ttsEngine.voice?.name ?: "null"
-                selectedVoiceName = voiceAfter
-                isMissingVoice = false
-
-                Log.d(TAG, "SUCCESSFULLY ASSIGNED VOICE for $language ($gender):\n" +
-                        "   Requested: '${matchedVoice.name}'\n" +
-                        "   Assigned:  '$voiceAfter'\n" +
-                        "   Match Verified: ${voiceAfter == matchedVoice.name}")
+                selectedVoiceName = ttsEngine.voice?.name ?: matchedVoice.name
+                DiagnosticLogger.log(TAG, "Assigned Voice: $selectedVoiceName for $language ($gender)")
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to set voice ${matchedVoice.name}: ${e.message}")
+                DiagnosticLogger.log(TAG, "Failed to set voice ${matchedVoice.name}: ${e.message}")
                 selectedVoiceName = "Default Locale Voice"
-                isMissingVoice = true
             }
         } else {
-            selectedVoiceName = "Default Locale Voice (Unmatched)"
-            isMissingVoice = availableVoices.isEmpty()
-            Log.w(TAG, "No specific $gender voice found for $language -> fallback to default voice '$voiceBefore'")
+            selectedVoiceName = "Default Locale Voice"
+            DiagnosticLogger.log(TAG, "No specific $gender voice for $language -> fallback to default locale voice")
         }
     }
 
@@ -294,10 +313,19 @@ class TtsManager(private val context: Context) {
      * Returns rendered audio duration in milliseconds, or -1L on failure.
      */
     suspend fun synthesizeToFile(text: String, destFile: File): Long = withContext(Dispatchers.IO) {
-        val ttsEngine = tts ?: return@withContext -1L
-        if (!ready || text.isBlank()) return@withContext -1L
+        if (!ensureInitialized()) {
+            DiagnosticLogger.log(TAG, "Synthesize failed: TTS engine not initialized")
+            return@withContext -1L
+        }
 
-        val currentVoiceName = ttsEngine.voice?.name ?: "null"
+        val ttsEngine = tts ?: return@withContext -1L
+        if (text.isBlank()) return@withContext -1L
+
+        if (destFile.parentFile?.exists() == false) {
+            destFile.parentFile?.mkdirs()
+        }
+
+        val currentVoiceName = ttsEngine.voice?.name ?: "default"
         val utteranceId = "synth_${System.currentTimeMillis()}_${destFile.nameWithoutExtension}"
 
         val success = suspendCancellableCoroutine<Boolean> { cont ->
@@ -323,19 +351,19 @@ class TtsManager(private val context: Context) {
             val result = ttsEngine.synthesizeToFile(text, params, destFile, utteranceId)
 
             if (result != TextToSpeech.SUCCESS) {
-                Log.e(TAG, "synthesizeToFile call failed with error code $result")
+                DiagnosticLogger.log(TAG, "synthesizeToFile call returned error code $result for text: \"${text.take(30)}\"")
                 if (cont.isActive) cont.resume(false)
             }
         }
 
         if (!success || !destFile.exists() || destFile.length() == 0L) {
-            Log.e(TAG, "Synthesis failed or created empty file for: ${text.take(40)}")
+            DiagnosticLogger.log(TAG, "Synthesis failed for text: \"${text.take(40)}\". Attempting default fallback…")
             return@withContext -1L
         }
 
         val durationMs = measureAudioDurationMs(destFile)
-        Log.d(TAG, "Pre-rendered audio (${destFile.name}): text=\"${text.take(40)}...\", " +
-                "activeVoice='$currentVoiceName', size=${destFile.length()} bytes, duration=${durationMs}ms")
+        DiagnosticLogger.log(TAG, "Pre-rendered audio (${destFile.name}): text=\"${text.take(30)}...\", " +
+                "voice='$currentVoiceName', size=${destFile.length()} bytes, duration=${durationMs}ms ✓")
         durationMs
     }
 
@@ -348,18 +376,18 @@ class TtsManager(private val context: Context) {
             mp.release()
             dur
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to measure audio duration for ${audioFile.name}: ${e.message}")
             -1L
         }
     }
 
-    fun stop() {
-        tts?.stop()
-    }
-
     fun shutdown() {
-        tts?.stop()
-        tts?.shutdown()
-        tts = null
+        try {
+            tts?.stop()
+            tts?.shutdown()
+            tts = null
+            isReady = false
+        } catch (e: Exception) {
+            Log.e(TAG, "Error shutting down TTS", e)
+        }
     }
 }

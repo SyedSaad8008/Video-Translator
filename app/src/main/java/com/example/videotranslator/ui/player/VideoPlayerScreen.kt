@@ -16,9 +16,14 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
@@ -47,6 +52,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.ui.PlayerView
 import com.example.videotranslator.R
+import com.example.videotranslator.library.VideoRun
 import com.example.videotranslator.model.Language
 import com.example.videotranslator.model.ProcessingState
 import com.example.videotranslator.tts.VoiceAvailabilityStatus
@@ -81,12 +87,14 @@ fun VideoPlayerScreen(
     val missingVoice     by viewModel.missingVoiceWarning.collectAsStateWithLifecycle()
     val voiceStatus      by viewModel.voiceAvailabilityStatus.collectAsStateWithLifecycle()
     val videoUri         by viewModel.videoUri.collectAsStateWithLifecycle()
+    val libraryRuns      by viewModel.libraryRuns.collectAsStateWithLifecycle()
     val logText          by DiagnosticLogger.logTextFlow.collectAsStateWithLifecycle()
     
-    var showLogSheet by remember { mutableStateOf(false) }
+    var showLogSheet     by remember { mutableStateOf(false) }
+    var showLibrarySheet by remember { mutableStateOf(false) }
 
-    val lifecycleOwner = LocalLifecycleOwner.current
-    val context        = LocalContext.current
+    val lifecycleOwner   = LocalLifecycleOwner.current
+    val context          = LocalContext.current
 
     val videoPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.GetContent()
@@ -117,12 +125,19 @@ fun VideoPlayerScreen(
         ) {
             Spacer(Modifier.height(12.dp))
 
-            PremiumHeader(onOpenDiagnostics = { showLogSheet = true })
+            PremiumHeader(
+                onOpenDiagnostics = { showLogSheet = true },
+                onOpenLibrary = { showLibrarySheet = true }
+            )
 
             Spacer(Modifier.height(20.dp))
 
             if (videoUri == null) {
-                PickerCard(onPick = { videoPicker.launch("video/*") })
+                PickerCard(
+                    onPick = { videoPicker.launch("video/*") },
+                    onOpenLibrary = { showLibrarySheet = true },
+                    libraryCount = libraryRuns.size
+                )
             } else {
                 VideoSurface(viewModel = viewModel)
             }
@@ -158,7 +173,19 @@ fun VideoPlayerScreen(
                     Spacer(Modifier.height(10.dp))
                     MusicHint(currentLanguage)
                     Spacer(Modifier.height(12.dp))
-                    ChangeVideoButton { videoPicker.launch("video/*") }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Box(modifier = Modifier.weight(1f)) {
+                            ChangeVideoButton { videoPicker.launch("video/*") }
+                        }
+                        Box(modifier = Modifier.weight(1f)) {
+                            LibraryButton { showLibrarySheet = true }
+                        }
+                    }
                 }
             }
 
@@ -196,13 +223,34 @@ fun VideoPlayerScreen(
                 }
             )
         }
+
+        if (showLibrarySheet) {
+            PersistentLibraryBottomSheet(
+                runs = libraryRuns,
+                onDismiss = { showLibrarySheet = false },
+                onSelectRun = { run ->
+                    viewModel.loadPastRun(run)
+                    showLibrarySheet = false
+                },
+                onDeleteRun = { runId ->
+                    viewModel.deleteRun(runId)
+                },
+                onUploadNew = {
+                    showLibrarySheet = false
+                    videoPicker.launch("video/*")
+                }
+            )
+        }
     }
 }
 
 // ─────────────────────────── Header ───────────────────────────────────────────
 
 @Composable
-private fun PremiumHeader(onOpenDiagnostics: () -> Unit) {
+private fun PremiumHeader(
+    onOpenDiagnostics: () -> Unit,
+    onOpenLibrary: () -> Unit
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -236,18 +284,34 @@ private fun PremiumHeader(onOpenDiagnostics: () -> Unit) {
             }
         }
 
-        IconButton(
-            onClick = onOpenDiagnostics,
-            modifier = Modifier
-                .clip(RoundedCornerShape(10.dp))
-                .background(BgCard)
-                .border(1.dp, BorderGold, RoundedCornerShape(10.dp))
-        ) {
-            Icon(
-                Icons.Default.Info,
-                contentDescription = "System Diagnostics",
-                tint = Gold
-            )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            IconButton(
+                onClick = onOpenLibrary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(BgCard)
+                    .border(1.dp, BorderGold, RoundedCornerShape(10.dp))
+            ) {
+                Icon(
+                    Icons.Default.List,
+                    contentDescription = "Persistent Video Library",
+                    tint = Gold
+                )
+            }
+
+            IconButton(
+                onClick = onOpenDiagnostics,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(BgCard)
+                    .border(1.dp, BorderGold, RoundedCornerShape(10.dp))
+            ) {
+                Icon(
+                    Icons.Default.Info,
+                    contentDescription = "System Diagnostics",
+                    tint = Gold
+                )
+            }
         }
     }
 }
@@ -255,48 +319,84 @@ private fun PremiumHeader(onOpenDiagnostics: () -> Unit) {
 // ─────────────────────────── Picker Card ──────────────────────────────────────
 
 @Composable
-private fun PickerCard(onPick: () -> Unit) {
-    LuxCard(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp)
-            .clickable { onPick() }
-    ) {
-        Column(
+private fun PickerCard(
+    onPick: () -> Unit,
+    onOpenLibrary: () -> Unit,
+    libraryCount: Int
+) {
+    Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+        LuxCard(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 40.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+                .clickable { onPick() }
         ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 36.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(72.dp)
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(BgCardLight)
+                        .border(1.dp, BorderGoldHi, RoundedCornerShape(20.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("🎬", fontSize = 32.sp)
+                }
+
+                Spacer(Modifier.height(18.dp))
+
+                Text(
+                    text = "Select Video from Device",
+                    color = Ivory,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                Spacer(Modifier.height(6.dp))
+
+                Text(
+                    text = "Translates Hindi dialogue → English & Telugu\nPreserves background music & lip-sync",
+                    color = IvoryDim,
+                    fontSize = 12.5.sp,
+                    textAlign = TextAlign.Center,
+                    lineHeight = 18.sp
+                )
+            }
+        }
+
+        if (libraryCount > 0) {
+            Spacer(Modifier.height(12.dp))
             Box(
                 modifier = Modifier
-                    .size(72.dp)
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(BgCardLight)
-                    .border(1.dp, BorderGoldHi, RoundedCornerShape(20.dp)),
-                contentAlignment = Alignment.Center
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(BgCard)
+                    .border(1.dp, BorderGold, RoundedCornerShape(14.dp))
+                    .clickable { onOpenLibrary() }
+                    .padding(vertical = 14.dp, horizontal = 16.dp)
             ) {
-                Text("🎬", fontSize = 32.sp)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.List, contentDescription = null, tint = Gold, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            text = "View Persistent Video Library ($libraryCount runs)",
+                            color = Ivory,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                    Text("→", color = Gold, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                }
             }
-
-            Spacer(Modifier.height(18.dp))
-
-            Text(
-                text = "Select Video from Device",
-                color = Ivory,
-                fontSize = 17.sp,
-                fontWeight = FontWeight.SemiBold
-            )
-
-            Spacer(Modifier.height(6.dp))
-
-            Text(
-                text = "Translates Hindi dialogue → English & Telugu\nPreserves background music & lip-sync",
-                color = IvoryDim,
-                fontSize = 12.5.sp,
-                textAlign = TextAlign.Center,
-                lineHeight = 18.sp
-            )
         }
     }
 }
@@ -460,7 +560,6 @@ private fun ChangeVideoButton(onClick: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(BgCard)
             .border(1.dp, BorderGold, RoundedCornerShape(12.dp))
@@ -469,12 +568,38 @@ private fun ChangeVideoButton(onClick: () -> Unit) {
         contentAlignment = Alignment.Center
     ) {
         Text(
-            "Change Video",
+            "Upload New Video",
             color = IvoryDim,
             fontSize = 13.sp,
-            letterSpacing = 1.5.sp,
-            fontWeight = FontWeight.Light
+            letterSpacing = 1.2.sp,
+            fontWeight = FontWeight.Medium
         )
+    }
+}
+
+@Composable
+private fun LibraryButton(onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(BgCard)
+            .border(1.dp, BorderGoldHi, RoundedCornerShape(12.dp))
+            .clickable { onClick() }
+            .padding(vertical = 13.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.List, contentDescription = null, tint = Gold, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "Open Library",
+                color = Gold,
+                fontSize = 13.sp,
+                letterSpacing = 1.2.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
     }
 }
 
@@ -531,6 +656,112 @@ private fun VoiceRemediationCard(
                     Text("Install Voice Data", color = Color(0xFF1A1000), fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 }
             }
+        }
+    }
+}
+
+// ─────────────────────────── Persistent Video Library Bottom Sheet ────────────
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PersistentLibraryBottomSheet(
+    runs: List<VideoRun>,
+    onDismiss: () -> Unit,
+    onSelectRun: (VideoRun) -> Unit,
+    onDeleteRun: (String) -> Unit,
+    onUploadNew: () -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = BgCard,
+        contentColor = Ivory
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text("Persistent Video Library", color = Gold, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Text("Past translation runs stored per unique upload ID", color = IvoryDim, fontSize = 12.sp)
+                }
+                Button(
+                    onClick = onUploadNew,
+                    colors = ButtonDefaults.buttonColors(containerColor = Gold),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("+ New Run", color = Color(0xFF1A1000), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+
+            if (runs.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(200.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("No past video runs recorded yet.", color = IvoryDim, fontSize = 13.sp)
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 400.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    items(runs, key = { it.runId }) { run ->
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(BgCardLight)
+                                .border(1.dp, BorderGold, RoundedCornerShape(12.dp))
+                                .padding(12.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = run.videoTitle,
+                                        color = Ivory,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Spacer(Modifier.height(2.dp))
+                                    Text(
+                                        text = "${run.formattedDate} • ${run.segmentCount} segments • ${run.detectedGender}",
+                                        color = IvoryDim,
+                                        fontSize = 11.sp
+                                    )
+                                }
+
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    IconButton(onClick = { onSelectRun(run) }) {
+                                        Icon(Icons.Default.PlayArrow, contentDescription = "Play Run", tint = SuccessGreen)
+                                    }
+                                    IconButton(onClick = { onDeleteRun(run.runId) }) {
+                                        Icon(Icons.Default.Delete, contentDescription = "Delete Run", tint = ErrorRed)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(16.dp))
         }
     }
 }

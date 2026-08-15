@@ -18,8 +18,9 @@ private const val MODEL_DOWNLOAD_TIMEOUT_MS = 30_000L // 30 second timeout
  *
  * Decouples full-sentence translation context from fine-grained audio timing sync segments:
  *  1. **Coarse Sentence Clustering**: Groups consecutive fine-grained sync segments into complete semantic sentences.
- *  2. **Neural Contextual Translation**: Translates the full coarse sentence in ML Kit with rich grammatical context.
- *  3. **Proportional Mapping**: Maps translated sentence words back onto fine audio sync segments proportionally by duration share.
+ *  2. **Natural Interjection Handling**: Protects short standalone reaction words/exclamations (word count <= 2, pause >= 600ms) from being force-merged.
+ *  3. **Neural Contextual Translation**: Translates the full coarse sentence in ML Kit with rich grammatical context.
+ *  4. **Proportional Mapping**: Maps translated sentence words back onto fine audio sync segments proportionally by duration share.
  */
 class TranslationManager {
 
@@ -118,6 +119,7 @@ class TranslationManager {
     /**
      * Groups consecutive fine segments into full grammatical sentences.
      * Rule: Merges segments if gap <= 1800ms and total words <= 35.
+     * Natural Interjection Protection: Standalone short reactions/interjections (words <= 2, gap >= 600ms) remain independent units.
      */
     private fun clusterSegmentsIntoFullSentences(segments: List<TranslationSegment>): List<List<TranslationSegment>> {
         val clusters = mutableListOf<MutableList<TranslationSegment>>()
@@ -129,9 +131,12 @@ class TranslationManager {
             } else {
                 val lastSeg = currentCluster.last()
                 val gapMs = seg.startMs - lastSeg.endMs
-                val totalWords = currentCluster.sumOf { countWords(it.hindi) } + countWords(seg.hindi)
+                val segWordCount = countWords(seg.hindi)
+                val totalWords = currentCluster.sumOf { countWords(it.hindi) } + segWordCount
 
-                if (gapMs <= 1800L && totalWords <= 35) {
+                val isStandaloneInterjection = segWordCount <= 2 && gapMs >= 600L
+
+                if (gapMs <= 1800L && totalWords <= 35 && !isStandaloneInterjection) {
                     currentCluster.add(seg)
                 } else {
                     clusters.add(currentCluster)
