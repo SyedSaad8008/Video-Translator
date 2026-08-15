@@ -26,11 +26,14 @@ flowchart LR
         SPEECH --> NOISE
     end
 
-    %% Phase 2: AI Speech & Pitch Analysis
-    subgraph P2 ["2️⃣ AI Speech & Tone Analysis"]
+    %% Phase 2: AI Speech & Multi-Signal Gender Analysis
+    subgraph P2 ["2️⃣ AI Speech & Gender Analysis"]
         direction TB
         STT["🗣️ Vosk Offline STT<br>(Recognizes Hindi Words)"]
-        PITCH["📊 YIN Pitch Detector<br>(Male vs Female F0 Tone)"]
+        PITCH["📊 Ensemble Gender Classifier<br>(F0 + Spectral Centroid + HNR)"]
+        SMOOTH["🔗 Temporal Consistency<br>(Smooths Isolated Outliers)"]
+
+        PITCH --> SMOOTH
     end
 
     %% Phase 3: Smart Translation
@@ -61,7 +64,7 @@ flowchart LR
     NOISE --> PITCH
     STT --> CLUSTER
     TRANSLATE --> VOICE
-    PITCH --> VOICE
+    SMOOTH --> VOICE
     MUSIC ==> PLAYBACK
 ```
 
@@ -73,9 +76,13 @@ flowchart LR
 - **Background Music Preservation**: Splits speech dialogue from background music so original soundtracks and sound effects are retained in the final video.
 - **DSP Noise Filtering**: Uses a 512-point Short-Time Fourier Transform (STFT) spectral noise filter to remove room noise and background hiss before recognition.
 
-### 2️⃣ Speech Recognition & Speaker Pitch Analysis
+### 2️⃣ Speech Recognition & Multi-Signal Gender Analysis
 - **High-Precision Offline STT**: Uses the Vosk Hindi acoustic model to transcribe spoken words locally without internet.
-- **Pitch-Based Gender Detection**: Uses YIN normalized autocorrelation to measure fundamental vocal pitch ($F_0$), identifying whether the speaker is Male ($<165\text{ Hz}$) or Female ($\ge165\text{ Hz}$).
+- **3-Signal Ensemble Gender Classifier**: Combines three independent acoustic signals per segment to accurately classify speaker gender:
+  - **F0 (Pitch)**: YIN autocorrelation for fundamental frequency estimation.
+  - **Spectral Centroid**: Center-of-mass of the frequency spectrum — robust to vocal fry / creaky voice that corrupts F0 at phrase-final positions.
+  - **HNR (Harmonic-to-Noise Ratio)**: Measures voice periodicity. When HNR is low (creaky speech), the system automatically discounts F0 and relies more heavily on spectral centroid.
+- **Temporal Consistency Smoothing**: After per-segment classification, a smoothing pass corrects isolated low-confidence outliers that disagree with both neighboring segments, while preserving genuine multi-speaker transitions.
 
 ### 3️⃣ Two-Tier Sentence Translation
 - **Full-Sentence Grammar Context**: Groups short phrase fragments into complete sentences before passing them to Google ML Kit, producing natural English and Telugu translations instead of choppy word-by-word dubs.
