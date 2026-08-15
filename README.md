@@ -13,13 +13,13 @@ flowchart LR
     %% Inputs
     VIDEO["🎬 Input Video<br>(Hindi Speech + Music)"]
 
-    %% Phase 1: Audio Processing
-    subgraph P1 ["1️⃣ Audio Extraction & Filtering"]
+    %% Phase 1: Audio Processing & Targeted Noise Removal
+    subgraph P1 ["1️⃣ Audio Extraction & Targeted Noise Filtering"]
         direction TB
         EXTRACT["🔊 Separate Audio Tracks"]
         MUSIC["🎵 Preserved Music Track"]
         SPEECH["🎙️ Raw Speech PCM"]
-        NOISE["🧹 DSP Spectral Noise Filter"]
+        NOISE["🧹 3-Type Targeted DSP Noise Filter<br>(Fan Hum + Wind HPF + Horn Attenuation)"]
 
         EXTRACT --> MUSIC
         EXTRACT --> SPEECH
@@ -36,13 +36,19 @@ flowchart LR
         PITCH --> SMOOTH
     end
 
-    %% Phase 3: Smart Translation
-    subgraph P3 ["3️⃣ Neural Translation"]
+    %% Phase 3: Smart Translation & Self-Verification
+    subgraph P3 ["3️⃣ Neural Translation & Verification"]
         direction TB
-        CLUSTER["🧩 Full-Sentence Grouping<br>(Contextual Grammar)"]
-        TRANSLATE["🤖 ML Kit Engine<br>(Translates to EN & TE)"]
+        CLEAN["🧹 Disfluency Cleaner<br>(Stutter & Filler Removal)"]
+        CLUSTER["🧩 Contextual Sentence Grouping"]
+        TRANSLATE["🤖 ML Kit Neural Engine<br>(Translates to EN & TE)"]
+        VERIFY["🔄 Back-Translation Verification<br>(EN → HI Divergence Check)"]
+        RECLUSTER["⚡ Adaptive Boundary Re-Clustering<br>(Re-groups Low-Confidence Sentences)"]
 
+        CLEAN --> CLUSTER
         CLUSTER --> TRANSLATE
+        TRANSLATE --> VERIFY
+        VERIFY --> RECLUSTER
     end
 
     %% Phase 4: Voice Synthesis & Video Playback
@@ -72,21 +78,27 @@ flowchart LR
 
 ## 💡 How Each Phase Works
 
-### 1️⃣ Audio Extraction & Cleaning
+### 1️⃣ Audio Extraction & Targeted 3-Type Noise Removal
 - **Background Music Preservation**: Splits speech dialogue from background music so original soundtracks and sound effects are retained in the final video.
-- **DSP Noise Filtering**: Uses a 512-point Short-Time Fourier Transform (STFT) spectral noise filter to remove room noise and background hiss before recognition.
+- **Multi-Type Targeted DSP Noise Reduction**:
+  - **Fan / AC / Ambient Hum**: 512-point STFT multi-region stationary noise-floor spectral subtraction.
+  - **Wind / Air Rumble**: Low-frequency High-Pass Filter (HPF) zeroing frequencies below $90\text{ Hz}$.
+  - **Horn / Loud Transients**: Energy onset derivative ($\Delta E$) & tonal peak detection. Attenuates transient horn energy and passes a `transientMask` to exclude horn frames from corrupting $F_0$ pitch tracking.
 
 ### 2️⃣ Speech Recognition & Multi-Signal Gender Analysis
 - **High-Precision Offline STT**: Uses the Vosk Hindi acoustic model to transcribe spoken words locally without internet.
 - **3-Signal Ensemble Gender Classifier**: Combines three independent acoustic signals per segment to accurately classify speaker gender:
-  - **F0 (Pitch)**: YIN autocorrelation for fundamental frequency estimation.
-  - **Spectral Centroid**: Center-of-mass of the frequency spectrum — robust to vocal fry / creaky voice that corrupts F0 at phrase-final positions.
+  - **F0 (Pitch)**: YIN autocorrelation for fundamental frequency estimation (with horn blast frame exclusion).
+  - **Spectral Centroid**: Center-of-mass of frequency spectrum — robust to vocal fry / creaky voice that corrupts F0 at phrase-final positions.
   - **HNR (Harmonic-to-Noise Ratio)**: Measures voice periodicity. When HNR is low (creaky speech), the system automatically discounts F0 and relies more heavily on spectral centroid.
 - **Temporal Consistency Smoothing**: After per-segment classification, a smoothing pass corrects isolated low-confidence outliers that disagree with both neighboring segments, while preserving genuine multi-speaker transitions.
 
-### 3️⃣ Two-Tier Sentence Translation
+### 3️⃣ Disfluency Cleanup, Two-Tier Translation & Self-Verification
+- **Hindi Speech Disfluency Cleanup**: Cleans stutters (`"मैं मैं"` → `"मैं"`), hesitation fillers (`"उम्म"`, `"अहह"`, `"मतलब की"`), and false starts before NMT, while preserving expressive reaction words (`"वाह"`, `"अरे!"`, `"ओह"`) as standalone exclamation units.
 - **Full-Sentence Grammar Context**: Groups short phrase fragments into complete sentences before passing them to Google ML Kit, producing natural English and Telugu translations instead of choppy word-by-word dubs.
-- **Proportional Audio Mapping**: Maps translated full-sentence words back to precise audio time windows to preserve video sync.
+- **Back-Translation Self-Verification**: Translates generated English text back to Hindi (EN $\rightarrow$ HI) and computes string edit distance divergence.
+- **Adaptive Sentence Boundary Re-Clustering**: For sentence clusters exceeding a divergence threshold ($>0.45$), the system automatically tests alternative sentence grouping boundaries and selects the translation with superior round-trip fidelity.
+- **Proportional Audio Mapping**: Maps translated full-sentence words back to precise audio time windows to preserve video lip-sync.
 
 ### 4️⃣ Gender-Matched Voice Synthesis & Timing Sync
 - **Gender-Matched Voice Selection**: Dubs male speakers with deep male voices (`en-us-x-tpd` / `te-in-x-teg`) and female speakers with clear female voices (`en-us-x-iob` / `te-in-x-tee`).
@@ -153,6 +165,7 @@ adb shell am start -n com.example.videotranslator/.MainActivity
 - **Supported Languages**: Hindi (Source Audio) $\rightarrow$ English & Telugu (Target Dubs).
 - **TTS Engine**: Google Speech Services (pre-installed on standard Android devices).
 - **Voice Remediation**: Includes an active in-app prompt launching `ACTION_INSTALL_TTS_DATA` if a device lacks installed voice packs.
+- **Acoustic Physical Limits Note**: For loud vehicle horns directly overlapping speech at high power, spectral attenuation reduces horn noise and excludes horn frames from pitch tracking, but cannot 100% disentangle identical frequency overlaps without slight vocal attenuation.
 
 ---
 

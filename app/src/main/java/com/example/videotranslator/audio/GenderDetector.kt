@@ -64,13 +64,14 @@ class GenderDetector {
         fullPcmMono: ShortArray? = null,
         segmentStartMs: Long = 0L,
         segmentEndMs: Long = 0L,
-        previousSegmentEndMs: Long = 0L
+        previousSegmentEndMs: Long = 0L,
+        transientMask: BooleanArray? = null
     ): DetectionResult {
 
         val pauseMs = max(0L, segmentStartMs - previousSegmentEndMs)
 
         // Pass 1: Analyze the segment's own PCM
-        val pass1 = analyzeEnsemble(pcmMono, fallbackGender)
+        val pass1 = analyzeEnsemble(pcmMono, fallbackGender, segmentStartMs, transientMask)
 
         val isUncertain = pass1.ensembleConfidence < SMOOTHING_CONFIDENCE_CEILING ||
                 pass1.totalVoicedFrames < MIN_VOICED_FRAMES
@@ -163,9 +164,11 @@ class GenderDetector {
 
     private fun analyzeEnsemble(
         pcmMono: ShortArray,
-        fallbackGender: Gender
+        fallbackGender: Gender,
+        segmentStartMs: Long = 0L,
+        transientMask: BooleanArray? = null
     ): DetectionResult {
-        if (pcmMono.isEmpty()) {
+        if (pcmMono.size == 0) {
             return DetectionResult(
                 medianF0 = 0f, spectralCentroid = 0f, hnr = 0f,
                 gender = fallbackGender, totalVoicedFrames = 0,
@@ -174,7 +177,6 @@ class GenderDetector {
             )
         }
 
-        // ── Signal 1: YIN F0 estimation ──────────────────────────────────────
         val frameSizeMs = 25
         val frameHopMs = 12
         val frameSize = (SAMPLE_RATE * (frameSizeMs / 1000.0)).toInt() // 400 samples
@@ -188,13 +190,24 @@ class GenderDetector {
         val frameRmsValues = mutableListOf<Double>()
         val rmsThreshold = 100.0
 
-        // Also accumulate spectral data per voiced frame
         val spectralCentroids = mutableListOf<Float>()
         val hnrValues = mutableListOf<Float>()
 
         var offset = 0
+        var frameIndex = 0
+
         while (offset + frameSize <= pcmMono.size) {
-            // RMS energy
+            // Check transient mask for horn blast exclusion
+            val absoluteFrameIdx = ((segmentStartMs * 16) / 256).toInt() + (offset / 256)
+            val isTransientHorn = transientMask != null && absoluteFrameIdx in transientMask.indices && transientMask[absoluteFrameIdx]
+
+            if (isTransientHorn) {
+                DiagnosticLogger.log(TAG, "EXCLUDED TRANSIENT HORN FRAME at offset ${offset}ms from F0 pitch tracking")
+                offset += frameHop
+                frameIndex++
+                continue
+            }
+
             var sumSq = 0.0
             for (i in 0 until frameSize) {
                 val s = pcmMono[offset + i].toDouble()

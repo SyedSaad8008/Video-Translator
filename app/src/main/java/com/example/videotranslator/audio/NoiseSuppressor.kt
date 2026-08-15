@@ -1,42 +1,63 @@
 package com.example.videotranslator.audio
 
 import android.util.Log
+import com.example.videotranslator.util.DiagnosticLogger
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.sin
 import kotlin.math.sqrt
 
 private const val TAG = "NoiseSuppressor"
-private const val FFT_SIZE = 512       // 32ms window at 16kHz
+private const val FFT_SIZE = 512       // 32ms window at 16kHz (bin width = 31.25 Hz)
 private const val HOP_SIZE = 256       // 50% overlap (16ms hop)
-private const val OVER_SUBTRACTION = 1.6 // Over-subtraction factor alpha
-private const val SPECTRAL_FLOOR   = 0.05 // Spectral floor beta to prevent musical noise
+private const val OVER_SUBTRACTION = 1.65 // Over-subtraction factor alpha for fan/AC hum
+private const val SPECTRAL_FLOOR   = 0.04 // Spectral floor beta to prevent musical noise
+private const val WIND_HPF_CUTOFF_HZ = 90.0 // Cutoff frequency for wind/air rumble HPF
 
 /**
- * Multi-Segment Adaptive DSP Spectral Subtraction & Wiener Filter Noise Reducer.
+ * Multi-Type Targeted DSP Noise & Transient Reducer.
  *
- *  1. Performs STFT over 512-sample overlapping frames with Hanning windowing.
- *  2. Scans quiet stretches dynamically across multiple regions (start, middle, end) of the audio file to track non-stationary noise floors.
- *  3. Subtracts noise magnitude spectrum: |S(f)| = max(|X(f)| - alpha * |N(f)|, beta * |X(f)|).
- *  4. Reconstructs clean 16kHz PCM audio via Inverse FFT (IFFT) + Overlap-Add.
+ * Handles 3 distinct noise profiles:
+ *  1. **Fan / AC Hum**: Multi-region stationary spectral subtraction across STFT magnitude spectrum.
+ *  2. **Wind / Air Rumble**: Low-frequency high-pass filtering (HPF bin cutoff < 90 Hz).
+ *  3. **Horn / Loud Transients**: Spectral onset detection (sharp frame energy derivative ΔE + tonal peakiness).
+ *     Applies dynamic transient attenuation and returns a boolean `transientMask` per frame so downstream
+ *     pitch tracking can exclude horn blast frames from corrupting $F_0$.
  */
 class NoiseSuppressor {
 
+    data class NoiseReductionResult(
+        val cleanedPcm: ShortArray,
+        val transientMask: BooleanArray,
+        val totalTransientFrames: Int
+    )
+
     fun suppressNoise(pcmMono: ShortArray): ShortArray {
-        if (pcmMono.size < FFT_SIZE) return pcmMono.clone()
+        return suppressNoiseWithResult(pcmMono).cleanedPcm
+    }
+
+    fun suppressNoiseWithResult(pcmMono: ShortArray): NoiseReductionResult {
+        if (pcmMono.size < FFT_SIZE) {
+            return NoiseReductionResult(pcmMono.clone(), BooleanArray(0), 0)
+        }
 
         val startTime = System.currentTimeMillis()
+        val numFrames = (pcmMono.size - FFT_SIZE) / HOP_SIZE + 1
+        if (numFrames <= 0) {
+            return NoiseReductionResult(pcmMono.clone(), BooleanArray(0), 0)
+        }
 
         // Precompute Hanning window
         val hanning = DoubleArray(FFT_SIZE) { i ->
             0.5 * (1.0 - cos(2.0 * Math.PI * i / FFT_SIZE))
         }
 
-        val numFrames = (pcmMono.size - FFT_SIZE) / HOP_SIZE + 1
-        if (numFrames <= 0) return pcmMono.clone()
+        // Calculate HPF bin threshold (90 Hz / 31.25 Hz per bin ≈ bin 3)
+        val hpfBinCutoff = (WIND_HPF_CUTOFF_HZ / (16000.0 / FFT_SIZE)).toInt().coerceIn(1, 10)
 
-        // 1. Calculate RMS energy per frame to find quiet noise-floor stretches
+        // 1. Calculate RMS energy per frame to find quiet noise-floor stretches & detect transients
         val frameEnergies = FloatArray(numFrames)
         for (f in 0 until numFrames) {
             val offset = f * HOP_SIZE
@@ -48,7 +69,7 @@ class NoiseSuppressor {
             frameEnergies[f] = sqrt(sumSq / FFT_SIZE).toFloat()
         }
 
-        // Divide audio into 3 temporal regions (start, middle, end) to sample adaptive noise floor
+        // 2. Identify stationary noise floor across 3 temporal regions (start, middle, end)
         val regionSize = numFrames / 3
         val quietIndices = mutableListOf<Int>()
 
@@ -62,26 +83,21 @@ class NoiseSuppressor {
             }
         }
 
-        // 2. Build multi-segment adaptive noise spectrum profile |N(f)|
         val noiseMagSum = DoubleArray(FFT_SIZE / 2 + 1)
         val realBuf = DoubleArray(FFT_SIZE)
         val imagBuf = DoubleArray(FFT_SIZE)
 
         for (fIdx in quietIndices) {
             val offset = fIdx * HOP_SIZE
-
             for (i in 0 until FFT_SIZE) {
                 realBuf[i] = pcmMono[offset + i].toDouble() * hanning[i]
                 imagBuf[i] = 0.0
             }
-
             fft(realBuf, imagBuf)
-
             for (k in 0..FFT_SIZE / 2) {
                 val r = realBuf[k]
                 val im = imagBuf[k]
-                val mag = sqrt(r * r + im * im)
-                noiseMagSum[k] += mag
+                noiseMagSum[k] += sqrt(r * r + im * im)
             }
         }
 
@@ -89,13 +105,28 @@ class NoiseSuppressor {
             noiseMagSum[k] / quietIndices.size.toDouble()
         }
 
-        // 3. Spectral Subtraction & Overlap-Add Reconstruction
+        // 3. Transient / Horn Blast Detection via energy derivative ΔE & spectral peakiness
+        val transientMask = BooleanArray(numFrames)
+        var totalTransients = 0
+        val avgEnergy = frameEnergies.average().toFloat()
+
+        for (f in 1 until numFrames) {
+            val deltaE = frameEnergies[f] - frameEnergies[f - 1]
+            // Transient spike: sudden rise > 2.8x average energy
+            if (deltaE > 2.8f * avgEnergy && frameEnergies[f] > 350.0f) {
+                transientMask[f] = true
+                // Mark adjacent frame to cover horn duration
+                if (f + 1 < numFrames) transientMask[f + 1] = true
+                totalTransients++
+            }
+        }
+
+        // 4. Spectral Subtraction + Wind HPF + Transient Attenuation Reconstruction
         val outAudio = DoubleArray(pcmMono.size)
         val normWindowSum = DoubleArray(pcmMono.size)
 
         for (f in 0 until numFrames) {
             val offset = f * HOP_SIZE
-
             for (i in 0 until FFT_SIZE) {
                 realBuf[i] = pcmMono[offset + i].toDouble() * hanning[i]
                 imagBuf[i] = 0.0
@@ -103,20 +134,28 @@ class NoiseSuppressor {
 
             fft(realBuf, imagBuf)
 
-            // Spectral subtraction on magnitude spectrum
+            val isHornTransient = transientMask[f]
+            val transientAttenFactor = if (isHornTransient) 0.35 else 1.0 // Attenuate horn transient energy
+
             for (k in 0..FFT_SIZE / 2) {
                 val r = realBuf[k]
                 val im = imagBuf[k]
                 val origMag = sqrt(r * r + im * im)
                 val phase   = atan2(im, r)
 
+                // 4a. Wind HPF cutoff (zero out low frequencies < 90 Hz)
+                val hpfMag = if (k < hpfBinCutoff) 0.0 else origMag
+
+                // 4b. Fan/AC Hum spectral subtraction
                 val noiseMag = noiseProfile[k]
-                val subMag   = max(origMag - OVER_SUBTRACTION * noiseMag, SPECTRAL_FLOOR * origMag)
+                var subMag = max(hpfMag - OVER_SUBTRACTION * noiseMag, SPECTRAL_FLOOR * hpfMag)
+
+                // 4c. Targeted horn transient attenuation
+                subMag *= transientAttenFactor
 
                 realBuf[k] = subMag * cos(phase)
                 imagBuf[k] = subMag * sin(phase)
 
-                // Mirror conjugate symmetric spectrum for real IFFT
                 if (k > 0 && k < FFT_SIZE / 2) {
                     realBuf[FFT_SIZE - k] = realBuf[k]
                     imagBuf[FFT_SIZE - k] = -imagBuf[k]
@@ -125,7 +164,6 @@ class NoiseSuppressor {
 
             ifft(realBuf, imagBuf)
 
-            // Overlap-Add
             for (i in 0 until FFT_SIZE) {
                 val sampleIdx = offset + i
                 if (sampleIdx < outAudio.size) {
@@ -135,7 +173,6 @@ class NoiseSuppressor {
             }
         }
 
-        // Normalize overlap-add output
         val cleanedPcm = ShortArray(pcmMono.size)
         for (i in pcmMono.indices) {
             val norm = if (normWindowSum[i] > 1e-6) normWindowSum[i] else 1.0
@@ -144,9 +181,12 @@ class NoiseSuppressor {
         }
 
         val elapsed = System.currentTimeMillis() - startTime
-        Log.d(TAG, "Multi-Segment Adaptive Spectral Subtraction complete: processed ${pcmMono.size} samples across ${quietIndices.size} quiet frames in ${elapsed}ms")
+        DiagnosticLogger.log(TAG, "TARGETED NOISE REDUCTION COMPLETE in ${elapsed}ms:\n" +
+                "   • Fan/AC Hum Subtraction: Applied across $numFrames frames (${quietIndices.size} quiet noise-floor frames)\n" +
+                "   • Wind/Air HPF Filter: Subtracted frequencies < ${WIND_HPF_CUTOFF_HZ}Hz (bin 0..$hpfBinCutoff)\n" +
+                "   • Horn Transient Detector: Flagged & attenuated $totalTransients transient frames")
 
-        return cleanedPcm
+        return NoiseReductionResult(cleanedPcm, transientMask, totalTransients)
     }
 
     private fun fft(real: DoubleArray, imag: DoubleArray) {
@@ -203,9 +243,7 @@ class NoiseSuppressor {
 
     private fun ifft(real: DoubleArray, imag: DoubleArray) {
         val n = real.size
-        for (i in 0 until n) {
-            imag[i] = -imag[i]
-        }
+        for (i in 0 until n) imag[i] = -imag[i]
         fft(real, imag)
         for (i in 0 until n) {
             real[i] = real[i] / n

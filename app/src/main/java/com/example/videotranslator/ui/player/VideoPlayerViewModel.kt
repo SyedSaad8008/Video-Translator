@@ -268,13 +268,18 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
             if (result.instrumental != null) instrumental.loadFromFile(instrumentalFile)
 
-            // ── 2b. Multi-Segment Adaptive DSP Noise Suppression ─────────
-            _processingState.value = ProcessingState.Loading("Applying adaptive DSP noise suppression…", 0.22f)
-            val cleanedMono = noiseSuppressor.suppressNoise(result.mono)
+            // ── 2b. Multi-Segment Targeted DSP Noise Suppression ─────────
+            _processingState.value = ProcessingState.Loading("Applying targeted DSP noise suppression (Fan, Wind HPF, Horn)…", 0.22f)
+            val noiseResult = noiseSuppressor.suppressNoiseWithResult(result.mono)
+            val cleanedMono = noiseResult.cleanedPcm
+            val transientMask = noiseResult.transientMask
 
             // ── 2c. Global Voice Gender Detection (Baseline) ──────────────
             _processingState.value = ProcessingState.Loading("Analyzing global audio pitch…", 0.28f)
-            val globalGenderResult = genderDetector.detectGender(cleanedMono)
+            val globalGenderResult = genderDetector.detectGender(
+                pcmMono = cleanedMono,
+                transientMask = transientMask
+            )
             _detectedGender.value = globalGenderResult.gender
             DiagnosticLogger.log(TAG, "Global Audio Gender Baseline: ${globalGenderResult.gender} (Median F0 = ${"%.1f".format(globalGenderResult.medianF0)} Hz)")
 
@@ -292,7 +297,7 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 return
             }
 
-            // ── 4. Download ML Kit translation models ─────────────────
+            // ── 4. Download ML Kit translation & verification models ─────
             _processingState.value = ProcessingState.Loading("Loading/Downloading neural translation models…", 0.58f)
             val modelResult = translationManager.downloadModels()
             if (modelResult.isFailure) {
@@ -304,8 +309,8 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 return
             }
 
-            // ── 5. Two-Tier Contextual Sentence Translation ───────────
-            _processingState.value = ProcessingState.Loading("Translating full sentence context into English & Telugu…", 0.72f)
+            // ── 5. Contextual Translation & Back-Translation Verification ─
+            _processingState.value = ProcessingState.Loading("Translating & verifying full sentence context…", 0.72f)
             val translatedSegments = translationManager.translate(rawSegments)
 
             // ── 5b. Phase 1: Multi-Signal Ensemble Gender Analysis (all segments) ─
@@ -330,7 +335,8 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
                     fullPcmMono = cleanedMono,
                     segmentStartMs = seg.startMs,
                     segmentEndMs = seg.endMs,
-                    previousSegmentEndMs = prevEndMs
+                    previousSegmentEndMs = prevEndMs,
+                    transientMask = transientMask
                 )
                 runningGender = res.gender
                 rawDetections.add(res)
