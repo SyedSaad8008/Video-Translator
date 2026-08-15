@@ -1,33 +1,62 @@
 package com.example.videotranslator.audio
 
-import android.util.Log
 import com.example.videotranslator.model.Gender
 import com.example.videotranslator.util.DiagnosticLogger
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
 
 private const val TAG = "GenderDetector"
 private const val SAMPLE_RATE = 16_000
-private const val MIN_VOICED_FRAMES = 10 // Minimum ~150ms of voiced speech
-private const val CONFIDENCE_THRESHOLD = 0.65f // Target confidence score for high certainty
+
+// ── Ensemble thresholds ──────────────────────────────────────────────────────
+private const val F0_MALE_FEMALE_BOUNDARY = 165.0f     // Hz — above = female-leaning
+private const val SC_MALE_FEMALE_BOUNDARY = 2200.0f    // Hz — spectral centroid boundary
+private const val HNR_RELIABILITY_FLOOR   = 4.0f       // dB — below this, F0 is untrustworthy (creaky)
+private const val MIN_VOICED_FRAMES       = 8          // Minimum ~120ms of voiced speech
+
+// ── Temporal smoothing ───────────────────────────────────────────────────────
+private const val SMOOTHING_CONFIDENCE_CEILING = 0.68f // Below this, allow neighbor override
 
 /**
- * Multi-Pass Pitch (F0) Estimator & Per-Segment Gender Classifier with Confidence Scoring.
+ * Multi-Signal Ensemble Gender Classifier with Temporal Consistency Smoothing.
  *
- * Tier 0.5 Upgrade: Clamps Pass 2 window expansion (+-250ms) to prevent expanding backward into
- * preceding speech pauses or trailing room noise/breath tails, fixing female misclassification after pauses.
+ * Combines three independent acoustic signals per segment:
+ *   1. YIN-based F0 (pitch) — kept from previous implementation
+ *   2. Spectral Centroid — center of mass of the frequency spectrum;
+ *      robust to vocal fry / creaky voice that corrupts F0
+ *   3. Harmonic-to-Noise Ratio (HNR) — measures voice periodicity;
+ *      low HNR flags unreliable F0 (creaky/trailing speech)
+ *
+ * Ensemble scoring weights each signal's vote by its own reliability,
+ * producing a single confidence-weighted gender decision per segment.
+ *
+ * After per-segment classification, a temporal consistency pass corrects
+ * isolated low-confidence outliers that disagree with both neighbors,
+ * while preserving genuine high-confidence speaker transitions.
  */
 class GenderDetector {
 
     data class DetectionResult(
         val medianF0: Float,
+        val spectralCentroid: Float,
+        val hnr: Float,
         val gender: Gender,
         val totalVoicedFrames: Int,
-        val confidenceScore: Float,
+        val ensembleConfidence: Float,
+        val f0Vote: Gender,
+        val scVote: Gender,
         val isPass2Triggered: Boolean = false,
-        val isCarriedOver: Boolean = false
+        val isCarriedOver: Boolean = false,
+        val wasSmoothed: Boolean = false,
+        // Legacy compat fields
+        val confidenceScore: Float = 0f
     )
+
+    // ── Public API: per-segment detection ────────────────────────────────────
 
     fun detectGender(
         pcmMono: ShortArray,
@@ -40,75 +69,132 @@ class GenderDetector {
 
         val pauseMs = max(0L, segmentStartMs - previousSegmentEndMs)
 
-        // Pass 1 Analysis
-        val pass1Result = analyzePcmSlice(
-            pcmMono = pcmMono,
-            frameSizeMs = 30,
-            frameHopMs = 15,
-            rmsThreshold = 120.0,
-            fallbackGender = fallbackGender
-        )
+        // Pass 1: Analyze the segment's own PCM
+        val pass1 = analyzeEnsemble(pcmMono, fallbackGender)
 
-        // Check if Pass 2 Multi-Pass analysis is needed
-        val isUncertain = pass1Result.confidenceScore < CONFIDENCE_THRESHOLD || pass1Result.totalVoicedFrames < 15
+        val isUncertain = pass1.ensembleConfidence < SMOOTHING_CONFIDENCE_CEILING ||
+                pass1.totalVoicedFrames < MIN_VOICED_FRAMES
 
         if (!isUncertain || fullPcmMono == null || fullPcmMono.isEmpty()) {
-            DiagnosticLogger.log(TAG, "Pass 1 Decisive ($segmentStartMs ms -> $segmentEndMs ms, Pause=$pauseMs ms): F0=${"%.1f".format(pass1Result.medianF0)}Hz, Conf=${"%.2f".format(pass1Result.confidenceScore)}, Voiced=${pass1Result.totalVoicedFrames}, Gender=${pass1Result.gender}")
-            return pass1Result
+            DiagnosticLogger.log(TAG, "Pass 1 Decisive (${segmentStartMs}ms→${segmentEndMs}ms, Pause=${pauseMs}ms): " +
+                    "F0=${"%.1f".format(pass1.medianF0)}Hz(${pass1.f0Vote}), " +
+                    "SC=${"%.0f".format(pass1.spectralCentroid)}Hz(${pass1.scVote}), " +
+                    "HNR=${"%.1f".format(pass1.hnr)}dB, " +
+                    "EnsConf=${"%.2f".format(pass1.ensembleConfidence)}, " +
+                    "Voiced=${pass1.totalVoicedFrames}, Gender=${pass1.gender}")
+            return pass1
         }
 
-        // Pass 2 Analysis: Expand window (+-250ms) BUT clamp expandedStartMs to previousSegmentEndMs to avoid pulling in silence/breath noise
+        // Pass 2: Expand window (clamped to avoid preceding pause)
         val clampedMinStartMs = max(previousSegmentEndMs, segmentStartMs)
         val expandedStartMs = max(clampedMinStartMs, segmentStartMs - 250L)
-        val expandedEndMs   = min((fullPcmMono.size * 1000L) / 16000L, segmentEndMs + 250L)
+        val expandedEndMs = min((fullPcmMono.size * 1000L) / SAMPLE_RATE.toLong(), segmentEndMs + 250L)
 
-        val startSample = ((expandedStartMs * 16000) / 1000).toInt().coerceIn(0, fullPcmMono.size)
-        val endSample   = ((expandedEndMs * 16000) / 1000).toInt().coerceIn(startSample, fullPcmMono.size)
-
+        val startSample = ((expandedStartMs * SAMPLE_RATE) / 1000).toInt().coerceIn(0, fullPcmMono.size)
+        val endSample = ((expandedEndMs * SAMPLE_RATE) / 1000).toInt().coerceIn(startSample, fullPcmMono.size)
         val expandedPcm = if (endSample > startSample) fullPcmMono.copyOfRange(startSample, endSample) else ShortArray(0)
 
-        DiagnosticLogger.log(TAG, "Pass 1 Uncertain ($segmentStartMs ms -> $segmentEndMs ms, Pause=$pauseMs ms, Conf=${"%.2f".format(pass1Result.confidenceScore)}) -> Running Pass 2 Clamped Expansion ($expandedStartMs ms -> $expandedEndMs ms)…")
+        DiagnosticLogger.log(TAG, "Pass 1 Uncertain (${segmentStartMs}ms→${segmentEndMs}ms, " +
+                "Pause=${pauseMs}ms, EnsConf=${"%.2f".format(pass1.ensembleConfidence)}) " +
+                "→ Pass 2 Expanded (${expandedStartMs}ms→${expandedEndMs}ms)…")
 
-        val pass2Result = analyzePcmSlice(
-            pcmMono = expandedPcm,
-            frameSizeMs = 20,
-            frameHopMs = 10,
-            rmsThreshold = 80.0,
-            fallbackGender = fallbackGender
-        )
+        val pass2 = analyzeEnsemble(expandedPcm, fallbackGender)
 
-        val finalResult = if (pass2Result.confidenceScore >= pass1Result.confidenceScore && pass2Result.totalVoicedFrames >= MIN_VOICED_FRAMES) {
-            pass2Result.copy(isPass2Triggered = true)
+        val final = if (pass2.ensembleConfidence >= pass1.ensembleConfidence &&
+            pass2.totalVoicedFrames >= MIN_VOICED_FRAMES
+        ) {
+            pass2.copy(isPass2Triggered = true)
         } else {
-            pass1Result.copy(isPass2Triggered = true)
+            pass1.copy(isPass2Triggered = true)
         }
 
-        DiagnosticLogger.log(TAG, "Pass 2 Final Result: F0=${"%.1f".format(finalResult.medianF0)}Hz, Conf=${"%.2f".format(finalResult.confidenceScore)}, Voiced=${finalResult.totalVoicedFrames}, Gender=${finalResult.gender}")
-        return finalResult
+        DiagnosticLogger.log(TAG, "Pass 2 Final: F0=${"%.1f".format(final.medianF0)}Hz(${final.f0Vote}), " +
+                "SC=${"%.0f".format(final.spectralCentroid)}Hz(${final.scVote}), " +
+                "HNR=${"%.1f".format(final.hnr)}dB, " +
+                "EnsConf=${"%.2f".format(final.ensembleConfidence)}, Gender=${final.gender}")
+        return final
     }
 
-    private fun analyzePcmSlice(
+    // ── Temporal consistency smoothing (called on the full sequence) ─────────
+
+    fun smoothSequence(results: List<DetectionResult>): List<DetectionResult> {
+        if (results.size < 3) return results
+
+        val smoothed = results.toMutableList()
+        var corrections = 0
+
+        for (i in 1 until results.lastIndex) {
+            val prev = smoothed[i - 1]
+            val curr = smoothed[i]
+            val next = smoothed[i + 1]
+
+            val disagreesWithBoth = curr.gender != prev.gender && curr.gender != next.gender
+            val neighborsAgree = prev.gender == next.gender
+            val currIsLowConf = curr.ensembleConfidence < SMOOTHING_CONFIDENCE_CEILING
+
+            if (disagreesWithBoth && neighborsAgree && currIsLowConf) {
+                val correctedGender = prev.gender
+                smoothed[i] = curr.copy(
+                    gender = correctedGender,
+                    wasSmoothed = true
+                )
+                corrections++
+
+                DiagnosticLogger.log(TAG, "⚡ TEMPORAL SMOOTHING [seg $i]: " +
+                        "Overriding ${curr.gender} → $correctedGender " +
+                        "(EnsConf=${"%.2f".format(curr.ensembleConfidence)} < $SMOOTHING_CONFIDENCE_CEILING, " +
+                        "neighbors=[${prev.gender}, ${next.gender}], " +
+                        "F0=${"%.1f".format(curr.medianF0)}Hz, " +
+                        "SC=${"%.0f".format(curr.spectralCentroid)}Hz, " +
+                        "HNR=${"%.1f".format(curr.hnr)}dB)")
+            }
+        }
+
+        if (corrections > 0) {
+            DiagnosticLogger.log(TAG, "Temporal smoothing corrected $corrections/${results.size} segments")
+        } else {
+            DiagnosticLogger.log(TAG, "Temporal smoothing: no corrections needed (all segments consistent)")
+        }
+
+        return smoothed
+    }
+
+    // ── Core multi-signal analysis ───────────────────────────────────────────
+
+    private fun analyzeEnsemble(
         pcmMono: ShortArray,
-        frameSizeMs: Int,
-        frameHopMs: Int,
-        rmsThreshold: Double,
         fallbackGender: Gender
     ): DetectionResult {
         if (pcmMono.isEmpty()) {
-            return DetectionResult(0f, fallbackGender, 0, 0.0f, isCarriedOver = true)
+            return DetectionResult(
+                medianF0 = 0f, spectralCentroid = 0f, hnr = 0f,
+                gender = fallbackGender, totalVoicedFrames = 0,
+                ensembleConfidence = 0f, f0Vote = fallbackGender, scVote = fallbackGender,
+                isCarriedOver = true, confidenceScore = 0f
+            )
         }
 
-        val frameSize = (SAMPLE_RATE * (frameSizeMs / 1000.0)).toInt()
-        val frameHop  = (SAMPLE_RATE * (frameHopMs / 1000.0)).toInt()
+        // ── Signal 1: YIN F0 estimation ──────────────────────────────────────
+        val frameSizeMs = 25
+        val frameHopMs = 12
+        val frameSize = (SAMPLE_RATE * (frameSizeMs / 1000.0)).toInt() // 400 samples
+        val frameHop = (SAMPLE_RATE * (frameHopMs / 1000.0)).toInt()   // 192 samples
 
-        val minLag = (SAMPLE_RATE / 350.0).toInt().coerceAtLeast(1) // 45 (350Hz upper bound)
-        val maxLag = (SAMPLE_RATE / 75.0).toInt().coerceAtMost(frameSize - 1) // 213 (75Hz lower bound)
+        val minLag = (SAMPLE_RATE / 350.0).toInt().coerceAtLeast(1)  // ~45 (350Hz)
+        val maxLag = (SAMPLE_RATE / 75.0).toInt().coerceAtMost(frameSize - 1) // ~213 (75Hz)
 
         val f0Estimates = mutableListOf<Float>()
         val peakValList = mutableListOf<Double>()
-        var offset = 0
+        val frameRmsValues = mutableListOf<Double>()
+        val rmsThreshold = 100.0
 
+        // Also accumulate spectral data per voiced frame
+        val spectralCentroids = mutableListOf<Float>()
+        val hnrValues = mutableListOf<Float>()
+
+        var offset = 0
         while (offset + frameSize <= pcmMono.size) {
+            // RMS energy
             var sumSq = 0.0
             for (i in 0 until frameSize) {
                 val s = pcmMono[offset + i].toDouble()
@@ -117,12 +203,12 @@ class GenderDetector {
             val rms = sqrt(sumSq / frameSize)
 
             if (rms >= rmsThreshold) {
-                val lags = IntArray(maxLag - minLag + 1)
-                val normAutocorr = DoubleArray(maxLag - minLag + 1)
+                frameRmsValues.add(rms)
 
-                for (idx in lags.indices) {
+                // ── F0 via normalized autocorrelation ────────────────────
+                val normAutocorr = DoubleArray(maxLag - minLag + 1)
+                for (idx in normAutocorr.indices) {
                     val lag = minLag + idx
-                    lags[idx] = lag
                     var c = 0.0
                     var rLag = 0.0
                     for (i in 0 until (frameSize - lag)) {
@@ -135,51 +221,145 @@ class GenderDetector {
                     normAutocorr[idx] = if (denom > 0) c / denom else 0.0
                 }
 
-                val peakLags = mutableListOf<Int>()
-                val peakVals = mutableListOf<Double>()
-
+                // Find best autocorrelation peak
+                var bestLag = -1
+                var bestVal = 0.0
                 for (i in 1 until normAutocorr.size - 1) {
                     val v = normAutocorr[i]
-                    if (v >= 0.30 && v > normAutocorr[i - 1] && v > normAutocorr[i + 1]) {
-                        peakLags.add(lags[i])
-                        peakVals.add(v)
+                    if (v >= 0.28 && v > normAutocorr[i - 1] && v > normAutocorr[i + 1]) {
+                        if (v > bestVal) {
+                            bestVal = v
+                            bestLag = minLag + i
+                        }
                     }
                 }
 
-                if (peakLags.isNotEmpty()) {
-                    val maxPeakVal = peakVals.maxOrNull() ?: 0.0
-                    for (i in peakLags.indices) {
-                        if (peakVals[i] >= 0.70 * maxPeakVal) {
-                            val f0 = SAMPLE_RATE.toFloat() / peakLags[i]
-                            if (f0 in 75.0f..350.0f) {
-                                f0Estimates.add(f0)
-                                peakValList.add(peakVals[i])
-                                break
-                            }
-                        }
+                if (bestLag > 0) {
+                    val f0 = SAMPLE_RATE.toFloat() / bestLag
+                    if (f0 in 75.0f..350.0f) {
+                        f0Estimates.add(f0)
+                        peakValList.add(bestVal)
+
+                        // ── Signal 3: HNR for this voiced frame ─────────────
+                        // HNR ≈ 10 * log10(autocorr_peak / (1 - autocorr_peak))
+                        val clampedPeak = bestVal.coerceIn(0.01, 0.99)
+                        val hnr = (10.0 * Math.log10(clampedPeak / (1.0 - clampedPeak))).toFloat()
+                        hnrValues.add(hnr)
                     }
+                }
+
+                // ── Signal 2: Spectral Centroid for this voiced frame ────
+                val sc = computeSpectralCentroid(pcmMono, offset, frameSize)
+                if (sc > 0f) {
+                    spectralCentroids.add(sc)
                 }
             }
             offset += frameHop
         }
 
+        // ── Aggregate signals ────────────────────────────────────────────────
+
         if (f0Estimates.isEmpty()) {
-            return DetectionResult(0f, fallbackGender, 0, 0.0f, isCarriedOver = true)
+            // No voiced frames at all — check if we can at least use spectral centroid
+            if (spectralCentroids.isNotEmpty()) {
+                val medianSC = median(spectralCentroids)
+                val scGender = if (medianSC < SC_MALE_FEMALE_BOUNDARY) Gender.MALE else Gender.FEMALE
+                return DetectionResult(
+                    medianF0 = 0f, spectralCentroid = medianSC, hnr = 0f,
+                    gender = scGender, totalVoicedFrames = 0,
+                    ensembleConfidence = 0.35f, f0Vote = fallbackGender, scVote = scGender,
+                    isCarriedOver = false, confidenceScore = 0.35f
+                )
+            }
+            return DetectionResult(
+                medianF0 = 0f, spectralCentroid = 0f, hnr = 0f,
+                gender = fallbackGender, totalVoicedFrames = 0,
+                ensembleConfidence = 0f, f0Vote = fallbackGender, scVote = fallbackGender,
+                isCarriedOver = true, confidenceScore = 0f
+            )
         }
 
-        f0Estimates.sort()
-        val medianF0 = f0Estimates[f0Estimates.size / 2]
+        val medianF0 = median(f0Estimates)
+        val medianSC = if (spectralCentroids.isNotEmpty()) median(spectralCentroids) else 0f
+        val medianHNR = if (hnrValues.isNotEmpty()) median(hnrValues) else 0f
 
-        val gender = if (medianF0 < 165.0f) Gender.MALE else Gender.FEMALE
-        val avgPeakVal = if (peakValList.isNotEmpty()) peakValList.average().toFloat() else 0.0f
-        val voicedRatio = (f0Estimates.size.toFloat() / max(1, (pcmMono.size / frameHop))).coerceAtMost(1.0f)
-        val confidenceScore = (avgPeakVal * 0.7f + voicedRatio * 0.3f).coerceIn(0.0f, 1.0f)
+        // ── Per-signal votes ─────────────────────────────────────────────────
+        val f0Vote = if (medianF0 < F0_MALE_FEMALE_BOUNDARY) Gender.MALE else Gender.FEMALE
+        val scVote = if (medianSC < SC_MALE_FEMALE_BOUNDARY) Gender.MALE else Gender.FEMALE
+
+        // ── Ensemble weighting ───────────────────────────────────────────────
+        //
+        // When HNR is high (periodic speech), F0 is reliable → weight it heavily.
+        // When HNR is low (creaky/trailing), F0 is unreliable → discount it,
+        //   lean on spectral centroid which is robust to creaky voice.
+        //
+        val f0Reliable = medianHNR >= HNR_RELIABILITY_FLOOR
+        val f0Weight = if (f0Reliable) 0.55f else 0.20f
+        val scWeight = if (f0Reliable) 0.35f else 0.65f
+        val voicedBonus = 0.10f // small bonus for having many voiced frames
+
+        // Score: how much evidence for MALE (0.0) vs FEMALE (1.0)
+        val f0Score = ((medianF0 - 100f) / 200f).coerceIn(0f, 1f) // 100Hz→0, 300Hz→1
+        val scScore = ((medianSC - 1200f) / 2000f).coerceIn(0f, 1f) // 1200Hz→0, 3200Hz→1
+        val voicedRatio = (f0Estimates.size.toFloat() / max(1, pcmMono.size / frameHop)).coerceAtMost(1f)
+
+        val ensembleScore = f0Weight * f0Score + scWeight * scScore + voicedBonus * voicedRatio
+        val gender = if (ensembleScore < 0.48f) Gender.MALE else Gender.FEMALE
+
+        // Confidence: how far from the decision boundary (0.48), scaled
+        val distFromBoundary = abs(ensembleScore - 0.48f)
+        val baseConfidence = (distFromBoundary / 0.48f).coerceIn(0f, 1f)
+        val avgPeakVal = peakValList.average().toFloat()
+        val ensembleConfidence = (baseConfidence * 0.6f + avgPeakVal * 0.25f + voicedRatio * 0.15f).coerceIn(0f, 1f)
 
         return DetectionResult(
             medianF0 = medianF0,
+            spectralCentroid = medianSC,
+            hnr = medianHNR,
             gender = gender,
             totalVoicedFrames = f0Estimates.size,
-            confidenceScore = confidenceScore
+            ensembleConfidence = ensembleConfidence,
+            f0Vote = f0Vote,
+            scVote = scVote,
+            confidenceScore = ensembleConfidence
         )
+    }
+
+    // ── Spectral centroid computation ─────────────────────────────────────────
+
+    private fun computeSpectralCentroid(pcm: ShortArray, offset: Int, frameSize: Int): Float {
+        // Use a simple DFT magnitude spectrum up to Nyquist (8000 Hz)
+        // For efficiency, compute only magnitudes at ~50 Hz resolution
+        val numBins = 160 // covers 0–8000Hz in 50Hz steps
+        val binWidth = SAMPLE_RATE.toFloat() / frameSize
+
+        var weightedSum = 0.0
+        var magSum = 0.0
+
+        for (k in 1..numBins.coerceAtMost(frameSize / 2)) {
+            val freq = k * binWidth
+            // DFT bin magnitude
+            var realPart = 0.0
+            var imagPart = 0.0
+            val omega = 2.0 * PI * k / frameSize
+            for (n in 0 until frameSize) {
+                val sample = pcm[offset + n].toDouble()
+                realPart += sample * cos(omega * n)
+                imagPart -= sample * kotlin.math.sin(omega * n)
+            }
+            val mag = sqrt(realPart * realPart + imagPart * imagPart)
+            weightedSum += freq * mag
+            magSum += mag
+        }
+
+        return if (magSum > 0) (weightedSum / magSum).toFloat() else 0f
+    }
+
+    // ── Utility ──────────────────────────────────────────────────────────────
+
+    private fun median(values: List<Float>): Float {
+        if (values.isEmpty()) return 0f
+        val sorted = values.sorted()
+        return sorted[sorted.size / 2]
     }
 }

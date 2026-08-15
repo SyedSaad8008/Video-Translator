@@ -308,30 +308,23 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
             _processingState.value = ProcessingState.Loading("Translating full sentence context into English & Telugu…", 0.72f)
             val translatedSegments = translationManager.translate(rawSegments)
 
-            // ── 5b. Multi-Pass Gender Analysis & Duration-Matched TTS Pre-Rendering ─
-            val renderedDir = cache.renderedAudioDirForRun(runId)
-            val finalProcessedSegments = mutableListOf<TranslationSegment>()
+            // ── 5b. Phase 1: Multi-Signal Ensemble Gender Analysis (all segments) ─
             val totalSegs = translatedSegments.size.coerceAtLeast(1)
-
             var runningGender = globalGenderResult.gender
 
+            _processingState.value = ProcessingState.Loading(
+                "Analyzing speaker gender (multi-signal ensemble)…", 0.74f
+            )
+
+            val rawDetections = mutableListOf<GenderDetector.DetectionResult>()
             for (idx in translatedSegments.indices) {
                 val seg = translatedSegments[idx]
-                val progressStep = 0.72f + (0.24f * (idx.toFloat() / totalSegs.toFloat()))
-                _processingState.value = ProcessingState.Loading(
-                    "Analyzing speaker tone & pre-rendering audio (${idx + 1}/$totalSegs)…",
-                    progressStep
-                )
-
-                // Extract specific PCM audio slice for this segment from cleanedMono
                 val startSample = ((seg.startMs * 16000) / 1000).toInt().coerceIn(0, cleanedMono.size)
                 val endSample   = ((seg.endMs * 16000) / 1000).toInt().coerceIn(startSample, cleanedMono.size)
                 val segPcm      = if (endSample > startSample) cleanedMono.copyOfRange(startSample, endSample) else ShortArray(0)
+                val prevEndMs   = if (idx > 0) translatedSegments[idx - 1].endMs else 0L
 
-                val prevEndMs = if (idx > 0) translatedSegments[idx - 1].endMs else 0L
-
-                // Detect gender specifically for this sentence segment with Multi-Pass analysis & pause boundary clamping
-                val segGenderRes = genderDetector.detectGender(
+                val res = genderDetector.detectGender(
                     pcmMono = segPcm,
                     fallbackGender = runningGender,
                     fullPcmMono = cleanedMono,
@@ -339,18 +332,45 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
                     segmentEndMs = seg.endMs,
                     previousSegmentEndMs = prevEndMs
                 )
-                val segmentGender = segGenderRes.gender
-                runningGender = segmentGender
+                runningGender = res.gender
+                rawDetections.add(res)
+            }
 
-                DiagnosticLogger.log(TAG, "SEGMENT GENDER LOG [$idx] (${seg.startMs}ms -> ${seg.endMs}ms):\n" +
-                        "   Voiced Frames: ${segGenderRes.totalVoicedFrames}\n" +
-                        "   Confidence:    ${"%.2f".format(segGenderRes.confidenceScore)}${if (segGenderRes.isPass2Triggered) " (Pass 2 Clamped Expansion Triggered)" else ""}\n" +
-                        "   Computed F0:   ${if (segGenderRes.isCarriedOver) "Insufficient data (Carried Over from $segmentGender)" else "${"%.1f".format(segGenderRes.medianF0)} Hz"}\n" +
-                        "   Resulting Gender: $segmentGender")
+            // ── 5c. Phase 2: Temporal Consistency Smoothing ─────────────────
+            _processingState.value = ProcessingState.Loading(
+                "Applying temporal consistency smoothing…", 0.78f
+            )
+            val smoothedDetections = genderDetector.smoothSequence(rawDetections)
+
+            // Log full ensemble results for every segment
+            for (idx in translatedSegments.indices) {
+                val seg = translatedSegments[idx]
+                val raw = rawDetections[idx]
+                val sm  = smoothedDetections[idx]
+                DiagnosticLogger.log(TAG, "ENSEMBLE GENDER [$idx] (${seg.startMs}ms→${seg.endMs}ms):\n" +
+                        "   F0=${"%.1f".format(raw.medianF0)}Hz → ${raw.f0Vote}\n" +
+                        "   SC=${"%.0f".format(raw.spectralCentroid)}Hz → ${raw.scVote}\n" +
+                        "   HNR=${"%.1f".format(raw.hnr)}dB\n" +
+                        "   EnsConf=${"%.2f".format(raw.ensembleConfidence)}, Voiced=${raw.totalVoicedFrames}\n" +
+                        "   Raw=${raw.gender}${if (sm.wasSmoothed) " → SMOOTHED TO ${sm.gender}" else ""}\n" +
+                        "   Final Gender: ${sm.gender}")
+            }
+
+            // ── 5d. Phase 3: Duration-Matched TTS Pre-Rendering ─────────────
+            val renderedDir = cache.renderedAudioDirForRun(runId)
+            val finalProcessedSegments = mutableListOf<TranslationSegment>()
+
+            for (idx in translatedSegments.indices) {
+                val seg = translatedSegments[idx]
+                val segmentGender = smoothedDetections[idx].gender
+                val progressStep = 0.80f + (0.16f * (idx.toFloat() / totalSegs.toFloat()))
+                _processingState.value = ProcessingState.Loading(
+                    "Pre-rendering dubbed audio (${idx + 1}/$totalSegs)…",
+                    progressStep
+                )
 
                 val targetDurationMs = (seg.endMs - seg.startMs).coerceAtLeast(300L)
 
-                // Pre-render English audio with segment-matched gender voice
                 val enFile = File(renderedDir, "seg_${idx}_en.wav")
                 ttsManager.selectVoiceForGender(Language.ENGLISH, segmentGender)
                 val enRenderedMs = ttsManager.synthesizeToFile(seg.english, enFile)
@@ -358,7 +378,6 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
                     (enRenderedMs.toFloat() / targetDurationMs.toFloat()).coerceIn(0.75f, 1.5f)
                 } else 1.0f
 
-                // Pre-render Telugu audio with segment-matched gender voice
                 val teFile = File(renderedDir, "seg_${idx}_te.wav")
                 ttsManager.selectVoiceForGender(Language.TELUGU, segmentGender)
                 val teRenderedMs = ttsManager.synthesizeToFile(seg.telugu, teFile)
