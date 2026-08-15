@@ -1,11 +1,15 @@
 package com.example.videotranslator.ui.player
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.speech.tts.TextToSpeech
 import android.util.Log
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
@@ -14,6 +18,7 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
@@ -27,6 +32,7 @@ import androidx.compose.ui.graphics.*
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -44,6 +50,7 @@ import com.example.videotranslator.R
 import com.example.videotranslator.model.Language
 import com.example.videotranslator.model.ProcessingState
 import com.example.videotranslator.tts.VoiceAvailabilityStatus
+import com.example.videotranslator.util.DiagnosticLogger
 
 // ─────────────────────────── Design tokens ───────────────────────────────────
 private val BgDeep        = Color(0xFF080810)
@@ -64,6 +71,7 @@ private val GoldGradient = Brush.linearGradient(listOf(GoldLight, Gold, GoldDim)
 
 // ─────────────────────────── Screen ──────────────────────────────────────────
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun VideoPlayerScreen(
     viewModel: VideoPlayerViewModel = viewModel()
@@ -73,8 +81,12 @@ fun VideoPlayerScreen(
     val missingVoice     by viewModel.missingVoiceWarning.collectAsStateWithLifecycle()
     val voiceStatus      by viewModel.voiceAvailabilityStatus.collectAsStateWithLifecycle()
     val videoUri         by viewModel.videoUri.collectAsStateWithLifecycle()
-    val lifecycleOwner   = LocalLifecycleOwner.current
-    val context          = LocalContext.current
+    val logText          by DiagnosticLogger.logTextFlow.collectAsStateWithLifecycle()
+    
+    var showLogSheet by remember { mutableStateOf(false) }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val context        = LocalContext.current
 
     val videoPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.GetContent()
@@ -105,7 +117,7 @@ fun VideoPlayerScreen(
         ) {
             Spacer(Modifier.height(12.dp))
 
-            PremiumHeader()
+            PremiumHeader(onOpenDiagnostics = { showLogSheet = true })
 
             Spacer(Modifier.height(20.dp))
 
@@ -127,7 +139,7 @@ fun VideoPlayerScreen(
                 Box(modifier = Modifier.padding(horizontal = 16.dp)) {
                     when (state) {
                         is ProcessingState.Loading -> ProcessingCard(state)
-                        is ProcessingState.Error   -> ErrorCard(state.message) { viewModel.reprocess() }
+                        is ProcessingState.Error   -> ErrorCard(state.message) { viewModel.retryPipeline() }
                         else -> {}
                     }
                 }
@@ -163,7 +175,7 @@ fun VideoPlayerScreen(
                             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                             context.startActivity(intent)
                         } catch (e: Exception) {
-                            Log.w("VideoPlayerScreen", "Unable to launch ACTION_INSTALL_TTS_DATA intent: ${e.message}")
+                            Log.e("VideoPlayerScreen", "Could not launch ACTION_INSTALL_TTS_DATA intent", e)
                         }
                     }
                 )
@@ -171,135 +183,136 @@ fun VideoPlayerScreen(
 
             Spacer(Modifier.height(32.dp))
         }
-    }
-}
 
-@Composable
-private fun AmbientGlow() {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(300.dp)
-            .drawBehind {
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        listOf(Gold.copy(alpha = 0.06f), Color.Transparent),
-                        center = Offset(size.width / 2, 0f),
-                        radius = size.width * 0.7f
-                    ),
-                    center = Offset(size.width / 2, 0f),
-                    radius = size.width * 0.7f
-                )
-            }
-    )
-}
-
-@Composable
-private fun PremiumHeader() {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp)
-    ) {
-        Image(
-            painter = painterResource(R.drawable.ic_app_logo),
-            contentDescription = "LinguaPlay App Logo",
-            modifier = Modifier
-                .size(48.dp)
-                .clip(RoundedCornerShape(12.dp)),
-            contentScale = ContentScale.Fit
-        )
-        Spacer(Modifier.height(8.dp))
-        Text(
-            text = "LINGUAPLAY",
-            color = Ivory,
-            fontSize = 20.sp,
-            fontWeight = FontWeight.Light,
-            letterSpacing = 7.sp
-        )
-        Spacer(Modifier.height(4.dp))
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center
-        ) {
-            GoldDivider(width = 30.dp)
-            Spacer(Modifier.width(10.dp))
-            Text(
-                text = "हिंदी  ·  English  ·  తెలుగు",
-                color = Gold,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Light,
-                letterSpacing = 2.sp
+        if (showLogSheet) {
+            DiagnosticLogBottomSheet(
+                logText = logText,
+                onDismiss = { showLogSheet = false },
+                onCopy = {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    val clip = ClipData.newPlainText("LinguaPlay Logs", logText)
+                    clipboard.setPrimaryClip(clip)
+                    Toast.makeText(context, "Diagnostic logs copied to clipboard!", Toast.LENGTH_SHORT).show()
+                }
             )
-            Spacer(Modifier.width(10.dp))
-            GoldDivider(width = 30.dp)
         }
     }
 }
 
+// ─────────────────────────── Header ───────────────────────────────────────────
+
 @Composable
-private fun GoldDivider(width: Dp) {
-    Box(
+private fun PremiumHeader(onOpenDiagnostics: () -> Unit) {
+    Row(
         modifier = Modifier
-            .width(width)
-            .height(1.dp)
-            .background(
-                Brush.horizontalGradient(listOf(Color.Transparent, Gold.copy(alpha = 0.5f), Color.Transparent))
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Image(
+                painter = painterResource(id = R.drawable.ic_app_logo),
+                contentDescription = "LinguaPlay Logo",
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(10.dp))
             )
-    )
+            Spacer(Modifier.width(12.dp))
+            Column {
+                Text(
+                    text = "LinguaPlay",
+                    color = Ivory,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.5.sp
+                )
+                Text(
+                    text = "Offline Dual-Dub Video Translator",
+                    color = Gold,
+                    fontSize = 11.sp,
+                    letterSpacing = 1.2.sp
+                )
+            }
+        }
+
+        IconButton(
+            onClick = onOpenDiagnostics,
+            modifier = Modifier
+                .clip(RoundedCornerShape(10.dp))
+                .background(BgCard)
+                .border(1.dp, BorderGold, RoundedCornerShape(10.dp))
+        ) {
+            Icon(
+                Icons.Default.Info,
+                contentDescription = "System Diagnostics",
+                tint = Gold
+            )
+        }
+    }
 }
+
+// ─────────────────────────── Picker Card ──────────────────────────────────────
 
 @Composable
 private fun PickerCard(onPick: () -> Unit) {
-    Box(
+    LuxCard(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp)
-            .clip(RoundedCornerShape(20.dp))
-            .background(BgCard)
-            .border(1.dp, BorderGold, RoundedCornerShape(20.dp))
             .clickable { onPick() }
-            .padding(vertical = 40.dp, horizontal = 24.dp),
-        contentAlignment = Alignment.Center
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 40.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
             Box(
                 modifier = Modifier
-                    .size(64.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(Gold.copy(alpha = 0.08f))
-                    .border(1.dp, BorderGoldHi, RoundedCornerShape(16.dp)),
+                    .size(72.dp)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(BgCardLight)
+                    .border(1.dp, BorderGoldHi, RoundedCornerShape(20.dp)),
                 contentAlignment = Alignment.Center
             ) {
-                Text("✦", fontSize = 26.sp, color = Gold)
+                Text("🎬", fontSize = 32.sp)
             }
-            Spacer(Modifier.height(16.dp))
+
+            Spacer(Modifier.height(18.dp))
+
             Text(
-                "Select Video from Device",
+                text = "Select Video from Device",
                 color = Ivory,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Normal,
-                letterSpacing = 1.sp
+                fontSize = 17.sp,
+                fontWeight = FontWeight.SemiBold
             )
+
             Spacer(Modifier.height(6.dp))
+
             Text(
-                "Supports MP4, MKV, MOV • Offline AI Speech Translation",
+                text = "Translates Hindi dialogue → English & Telugu\nPreserves background music & lip-sync",
                 color = IvoryDim,
-                fontSize = 12.sp
+                fontSize = 12.5.sp,
+                textAlign = TextAlign.Center,
+                lineHeight = 18.sp
             )
         }
     }
 }
+
+// ─────────────────────────── Video Surface ────────────────────────────────────
 
 @Composable
 private fun VideoSurface(viewModel: VideoPlayerViewModel) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
+            .aspectRatio(16f / 9f)
             .padding(horizontal = 16.dp)
-            .height(230.dp)
-            .clip(RoundedCornerShape(20.dp))
+            .clip(RoundedCornerShape(16.dp))
+            .border(1.dp, BorderGoldHi, RoundedCornerShape(16.dp))
             .background(Color.Black)
-            .border(1.dp, BorderGold, RoundedCornerShape(20.dp))
     ) {
         AndroidView(
             factory = { context ->
@@ -317,35 +330,24 @@ private fun VideoSurface(viewModel: VideoPlayerViewModel) {
     }
 }
 
-/** Luxury card with gold border */
-@Composable
-private fun LuxCard(
-    borderColor: Color = BorderGold,
-    content: @Composable ColumnScope.() -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
-            .background(BgCard)
-            .border(1.dp, borderColor, RoundedCornerShape(18.dp))
-            .padding(16.dp),
-        content = content
-    )
-}
+// ─────────────────────────── Processing Card ──────────────────────────────────
 
 @Composable
 private fun ProcessingCard(state: ProcessingState.Loading) {
-    LuxCard(borderColor = BorderGoldHi) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+    LuxCard {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
             CircularProgressIndicator(
                 progress = { state.progress },
-                modifier = Modifier.size(24.dp),
+                modifier = Modifier.size(36.dp),
                 color = Gold,
-                strokeWidth = 2.5.dp
+                trackColor = BgCardLight,
+                strokeWidth = 3.dp
             )
-            Spacer(Modifier.width(14.dp))
-            Column {
+            Spacer(Modifier.width(16.dp))
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
                     state.step,
                     color = Ivory,
@@ -375,8 +377,9 @@ private fun ErrorCard(message: String, onRetry: () -> Unit) {
             )
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text("Pipeline Error", color = ErrorRed, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                Text(message, color = IvoryDim, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text("Pipeline Processing Error", color = ErrorRed, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(2.dp))
+                Text(message, color = IvoryDim, fontSize = 12.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
             }
             IconButton(onClick = onRetry) {
                 Icon(Icons.Default.Refresh, contentDescription = "Retry", tint = Gold)
@@ -519,21 +522,109 @@ private fun VoiceRemediationCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End
             ) {
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(GoldGradient)
-                        .clickable { onInstallData() }
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                Button(
+                    onClick = onInstallData,
+                    colors = ButtonDefaults.buttonColors(containerColor = Gold),
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
                 ) {
-                    Text(
-                        text = "Install Voice Data",
-                        color = Color(0xFF1A1000),
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    Text("Install Voice Data", color = Color(0xFF1A1000), fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
+    }
+}
+
+// ─────────────────────────── Diagnostic Log Modal Sheet ─────────────────────
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DiagnosticLogBottomSheet(
+    logText: String,
+    onDismiss: () -> Unit,
+    onCopy: () -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = BgCard,
+        contentColor = Ivory
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("System Diagnostics & Pipeline Logs", color = Gold, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Button(
+                    onClick = onCopy,
+                    colors = ButtonDefaults.buttonColors(containerColor = Gold),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("Copy Logs", color = Color(0xFF1A1000), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(350.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color.Black)
+                    .border(1.dp, BorderGold, RoundedCornerShape(8.dp))
+                    .padding(12.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    text = logText.ifBlank { "No diagnostic logs recorded yet." },
+                    color = Color(0xFF00FF66),
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp,
+                    lineHeight = 16.sp
+                )
+            }
+            Spacer(Modifier.height(16.dp))
+        }
+    }
+}
+
+// ─────────────────────────── Lux Card Container ───────────────────────────────
+
+@Composable
+private fun LuxCard(
+    modifier: Modifier = Modifier,
+    borderColor: Color = BorderGold,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Box(
+        modifier = modifier
+            .padding(horizontal = 16.dp, vertical = 6.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .background(BgCard)
+            .border(1.dp, borderColor, RoundedCornerShape(18.dp))
+            .padding(18.dp)
+    ) {
+        Column(content = content)
+    }
+}
+
+// ─────────────────────────── Ambient Glow ────────────────────────────────────
+
+@Composable
+private fun AmbientGlow() {
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(Gold.copy(alpha = 0.05f), Color.Transparent),
+                center = Offset(size.width * 0.5f, 0f),
+                radius = size.width * 0.8f
+            ),
+            radius = size.width * 0.8f,
+            center = Offset(size.width * 0.5f, 0f)
+        )
     }
 }

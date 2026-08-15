@@ -2,12 +2,16 @@ package com.example.videotranslator.translation
 
 import android.util.Log
 import com.example.videotranslator.model.TranslationSegment
+import com.example.videotranslator.util.DiagnosticLogger
 import com.google.mlkit.nl.translate.TranslateLanguage
 import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.TranslatorOptions
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withTimeout
+import java.io.IOException
 
 private const val TAG = "TranslationManager"
+private const val MODEL_DOWNLOAD_TIMEOUT_MS = 30_000L // 30 second timeout
 
 /**
  * Stage 3 ML Kit Two-Tier Contextual Translation Manager.
@@ -32,23 +36,39 @@ class TranslationManager {
             .build()
     )
 
-    suspend fun downloadModels() {
-        Log.d(TAG, "STAGE 3 - Ensuring ML Kit translation models are downloaded…")
-        hiEnTranslator.downloadModelIfNeeded().await()
-        hiTeTranslator.downloadModelIfNeeded().await()
-        Log.d(TAG, "STAGE 3 - ML Kit translation models ready ✓")
+    suspend fun downloadModels(): Result<Unit> {
+        DiagnosticLogger.log(TAG, "STAGE 3 - Ensuring ML Kit translation models (HI->EN, HI->TE) are ready…")
+        return try {
+            withTimeout(MODEL_DOWNLOAD_TIMEOUT_MS) {
+                DiagnosticLogger.log(TAG, "Checking/Downloading Hindi->English NMT model…")
+                hiEnTranslator.downloadModelIfNeeded().await()
+
+                DiagnosticLogger.log(TAG, "Checking/Downloading Hindi->Telugu NMT model…")
+                hiTeTranslator.downloadModelIfNeeded().await()
+            }
+            DiagnosticLogger.log(TAG, "STAGE 3 - ML Kit translation models downloaded & verified ✓")
+            Result.success(Unit)
+        } catch (e: Exception) {
+            val errorMsg = "Failed to download ML Kit translation models. Internet connection required on initial app setup. (${e.localizedMessage})"
+            DiagnosticLogger.log(TAG, "STAGE 3 ERROR: $errorMsg", e)
+            Result.failure(IOException(errorMsg, e))
+        }
     }
 
     /**
      * Two-Tier Contextual Sentence Translation.
      */
     suspend fun translate(fineSegments: List<TranslationSegment>): List<TranslationSegment> {
-        if (fineSegments.isEmpty()) return emptyList()
-        Log.d(TAG, "STAGE 3 - Starting Two-Tier Contextual Translation over ${fineSegments.size} fine sync segments…")
+        if (fineSegments.isEmpty()) {
+            DiagnosticLogger.log(TAG, "STAGE 3 - No fine segments to translate.")
+            return emptyList()
+        }
+        val startTime = System.currentTimeMillis()
+        DiagnosticLogger.log(TAG, "STAGE 3 - Starting Two-Tier Contextual Translation over ${fineSegments.size} fine sync segments…")
 
         // 1. Group fine segments into coarse full-sentence clusters
         val sentenceClusters = clusterSegmentsIntoFullSentences(fineSegments)
-        Log.d(TAG, "STAGE 3 - Clustered ${fineSegments.size} fine segments into ${sentenceClusters.size} coarse full sentences")
+        DiagnosticLogger.log(TAG, "STAGE 3 - Clustered ${fineSegments.size} fine segments into ${sentenceClusters.size} coarse full sentences")
 
         val result = mutableListOf<TranslationSegment>()
 
@@ -64,7 +84,7 @@ class TranslationManager {
                 val raw = hiEnTranslator.translate(fullHindiText).await()
                 cleanSentence(raw)
             } catch (e: Exception) {
-                Log.w(TAG, "STAGE 3 - Full sentence HI->EN translation failed for: \"$fullHindiText\"", e)
+                DiagnosticLogger.log(TAG, "STAGE 3 - Full sentence HI->EN translation failed for: \"$fullHindiText\"", e)
                 ""
             }
 
@@ -72,14 +92,14 @@ class TranslationManager {
                 val raw = hiTeTranslator.translate(fullHindiText).await()
                 cleanSentence(raw)
             } catch (e: Exception) {
-                Log.w(TAG, "STAGE 3 - Full sentence HI->TE translation failed for: \"$fullHindiText\"", e)
+                DiagnosticLogger.log(TAG, "STAGE 3 - Full sentence HI->TE translation failed for: \"$fullHindiText\"", e)
                 ""
             }
 
-            Log.d(TAG, "STAGE 3 - Coarse Cluster [$cIdx] (${cluster.first().startMs}ms -> ${cluster.last().endMs}ms):")
-            Log.d(TAG, "   FULL HINDI:   \"$fullHindiText\"")
-            Log.d(TAG, "   FULL ENGLISH: \"$fullEnglishText\"")
-            Log.d(TAG, "   FULL TELUGU:  \"$fullTeluguText\"")
+            DiagnosticLogger.log(TAG, "STAGE 3 - Coarse Cluster [$cIdx] (${cluster.first().startMs}ms -> ${cluster.last().endMs}ms):")
+            DiagnosticLogger.log(TAG, "   FULL HINDI:   \"$fullHindiText\"")
+            DiagnosticLogger.log(TAG, "   FULL ENGLISH: \"$fullEnglishText\"")
+            DiagnosticLogger.log(TAG, "   FULL TELUGU:  \"$fullTeluguText\"")
 
             // Map translated words proportionally back to fine sync segments
             val mappedFineSegments = mapTranslatedSentenceToFineSegments(
@@ -90,51 +110,44 @@ class TranslationManager {
             result.addAll(mappedFineSegments)
         }
 
-        Log.d(TAG, "STAGE 3 - Two-Tier Contextual Translation complete for ${result.size} sync segments ✓")
+        val duration = System.currentTimeMillis() - startTime
+        DiagnosticLogger.log(TAG, "STAGE 3 - Two-Tier Contextual Translation complete for ${result.size} sync segments in ${duration}ms ✓")
         return result
     }
 
     /**
      * Groups consecutive fine segments into full grammatical sentences.
+     * Rule: Merges segments if gap <= 1800ms and total words <= 35.
      */
     private fun clusterSegmentsIntoFullSentences(segments: List<TranslationSegment>): List<List<TranslationSegment>> {
-        val clusters = mutableListOf<List<TranslationSegment>>()
-        val currentCluster = mutableListOf<TranslationSegment>()
-
-        val MAX_GAP_MS = 1800L      // Max allowed pause between segments in a sentence
-        val MAX_WORD_COUNT = 35     // Max words per coarse sentence
-        val MAX_DURATION_MS = 16000L // Max duration per coarse sentence
+        val clusters = mutableListOf<MutableList<TranslationSegment>>()
+        var currentCluster = mutableListOf<TranslationSegment>()
 
         for (seg in segments) {
             if (currentCluster.isEmpty()) {
                 currentCluster.add(seg)
-                continue
+            } else {
+                val lastSeg = currentCluster.last()
+                val gapMs = seg.startMs - lastSeg.endMs
+                val totalWords = currentCluster.sumOf { countWords(it.hindi) } + countWords(seg.hindi)
+
+                if (gapMs <= 1800L && totalWords <= 35) {
+                    currentCluster.add(seg)
+                } else {
+                    clusters.add(currentCluster)
+                    currentCluster = mutableListOf(seg)
+                }
             }
-
-            val prevSeg = currentCluster.last()
-            val gapMs = seg.startMs - prevSeg.endMs
-            val totalWords = currentCluster.sumOf { countWords(it.hindi) } + countWords(seg.hindi)
-            val totalDurationMs = seg.endMs - currentCluster.first().startMs
-
-            val shouldSplit = gapMs > MAX_GAP_MS ||
-                              totalWords > MAX_WORD_COUNT ||
-                              totalDurationMs > MAX_DURATION_MS
-
-            if (shouldSplit) {
-                clusters.add(ArrayList(currentCluster))
-                currentCluster.clear()
-            }
-            currentCluster.add(seg)
         }
-
         if (currentCluster.isNotEmpty()) {
-            clusters.add(ArrayList(currentCluster))
+            clusters.add(currentCluster)
         }
         return clusters
     }
 
     /**
-     * Proportionally distributes translated sentence words across fine sync segments based on duration share.
+     * Maps translated full-sentence text back to individual fine sync segments
+     * proportionally based on each segment's duration share in the coarse cluster.
      */
     private fun mapTranslatedSentenceToFineSegments(
         cluster: List<TranslationSegment>,
@@ -144,69 +157,66 @@ class TranslationManager {
         if (cluster.size == 1) {
             return listOf(
                 cluster[0].copy(
-                    english = fullEnglishText,
-                    telugu  = fullTeluguText
+                    english = fullEnglishText.ifBlank { cluster[0].english },
+                    telugu  = fullTeluguText.ifBlank { cluster[0].telugu }
                 )
             )
         }
 
-        val totalClusterDuration = (cluster.last().endMs - cluster.first().startMs).toDouble().coerceAtLeast(1.0)
-        val enWords = fullEnglishText.split("\\s+".toRegex()).filter { it.isNotBlank() }
-        val teWords = fullTeluguText.split("\\s+".toRegex()).filter { it.isNotBlank() }
+        val totalClusterDurationMs = (cluster.last().endMs - cluster.first().startMs).coerceAtLeast(1L)
+        val englishWords = fullEnglishText.split("\\s+".toRegex()).filter { it.isNotBlank() }
+        val teluguWords  = fullTeluguText.split("\\s+".toRegex()).filter { it.isNotBlank() }
 
-        val mappedList = mutableListOf<TranslationSegment>()
+        val mappedSegments = mutableListOf<TranslationSegment>()
         var enWordIdx = 0
         var teWordIdx = 0
 
-        for ((i, seg) in cluster.withIndex()) {
-            val segDuration = (seg.endMs - seg.startMs).toDouble().coerceAtLeast(1.0)
-            val shareFraction = segDuration / totalClusterDuration
+        for ((idx, seg) in cluster.withIndex()) {
+            val segDurationMs = (seg.endMs - seg.startMs).coerceAtLeast(1L)
+            val durationRatio = segDurationMs.toDouble() / totalClusterDurationMs
 
-            val isLast = (i == cluster.size - 1)
+            val enCount = if (idx == cluster.lastIndex) {
+                englishWords.size - enWordIdx
+            } else {
+                (englishWords.size * durationRatio).toInt().coerceAtLeast(1)
+            }
 
-            val enTake = if (isLast) (enWords.size - enWordIdx) else (enWords.size * shareFraction).toInt().coerceAtLeast(1)
-            val teTake = if (isLast) (teWords.size - teWordIdx) else (teWords.size * shareFraction).toInt().coerceAtLeast(1)
+            val teCount = if (idx == cluster.lastIndex) {
+                teluguWords.size - teWordIdx
+            } else {
+                (teluguWords.size * durationRatio).toInt().coerceAtLeast(1)
+            }
 
-            val segEnWords = enWords.subList(enWordIdx, (enWordIdx + enTake).coerceAtMost(enWords.size))
-            val segTeWords = teWords.subList(teWordIdx, (teWordIdx + teTake).coerceAtMost(teWords.size))
+            val segEnWords = mutableListOf<String>()
+            var takeEn = 0
+            while (enWordIdx < englishWords.size && takeEn < enCount) {
+                segEnWords.add(englishWords[enWordIdx])
+                enWordIdx++
+                takeEn++
+            }
 
-            enWordIdx = (enWordIdx + enTake).coerceAtMost(enWords.size)
-            teWordIdx = (teWordIdx + teTake).coerceAtMost(teWords.size)
+            val segTeWords = mutableListOf<String>()
+            var takeTe = 0
+            while (teWordIdx < teluguWords.size && takeTe < teCount) {
+                segTeWords.add(teluguWords[teWordIdx])
+                teWordIdx++
+                takeTe++
+            }
 
-            val segEnText = cleanSentence(segEnWords.joinToString(" "))
-            val segTeText = cleanSentence(segTeWords.joinToString(" "))
-
-            Log.d(TAG, "   Mapped Seg [$i] (${seg.startMs}ms - ${seg.endMs}ms):")
-            Log.d(TAG, "      HI: \"${seg.hindi}\"")
-            Log.d(TAG, "      EN: \"$segEnText\"")
-            Log.d(TAG, "      TE: \"$segTeText\"")
-
-            mappedList.add(
+            mappedSegments.add(
                 seg.copy(
-                    english = segEnText,
-                    telugu  = segTeText
+                    english = segEnWords.joinToString(" ").ifBlank { seg.english },
+                    telugu  = segTeWords.joinToString(" ").ifBlank { seg.telugu }
                 )
             )
         }
-        return mappedList
+
+        return mappedSegments
     }
 
-    private fun countWords(text: String): Int {
-        return text.trim().split("\\s+".toRegex()).filter { it.isNotBlank() }.size
-    }
+    private fun countWords(text: String): Int =
+        text.trim().split("\\s+".toRegex()).count { it.isNotBlank() }
 
-    private fun cleanSentence(raw: String): String {
-        var text = raw.trim().replace("\\s+".toRegex(), " ")
-        if (text.isEmpty()) return ""
-
-        if (text.isNotEmpty() && text[0].isLowerCase()) {
-            text = text.replaceFirstChar { it.uppercase() }
-        }
-        return text
-    }
-
-    fun close() {
-        hiEnTranslator.close()
-        hiTeTranslator.close()
-    }
+    private fun cleanSentence(raw: String): String =
+        raw.trim().replace(Regex("\\s+"), " ")
 }

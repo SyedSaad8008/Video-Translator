@@ -2,6 +2,7 @@ package com.example.videotranslator.audio
 
 import android.util.Log
 import com.example.videotranslator.model.Gender
+import com.example.videotranslator.util.DiagnosticLogger
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
@@ -14,10 +15,8 @@ private const val CONFIDENCE_THRESHOLD = 0.65f // Target confidence score for hi
 /**
  * Multi-Pass Pitch (F0) Estimator & Per-Segment Gender Classifier with Confidence Scoring.
  *
- *  1. **Pass 1 Primary Analysis**: 30ms frames (480 samples), 15ms hop, YIN Normalized Autocorrelation.
- *  2. **Confidence Metric (C)**: Evaluates peak strength ratio & autocorrelation consistency across voiced frames.
- *  3. **Pass 2 Multi-Pass Window Expansion**: If C < 0.65 or voiced frames < 15, runs a secondary pass with a 50% wider window (+-250ms) and 20ms frame resolution to resolve ambiguous audio.
- *  4. **Carryover Fallback**: If confidence remains low, carries over previous segment's gender.
+ * Tier 0.5 Upgrade: Clamps Pass 2 window expansion (+-250ms) to prevent expanding backward into
+ * preceding speech pauses or trailing room noise/breath tails, fixing female misclassification after pauses.
  */
 class GenderDetector {
 
@@ -35,8 +34,11 @@ class GenderDetector {
         fallbackGender: Gender = Gender.MALE,
         fullPcmMono: ShortArray? = null,
         segmentStartMs: Long = 0L,
-        segmentEndMs: Long = 0L
+        segmentEndMs: Long = 0L,
+        previousSegmentEndMs: Long = 0L
     ): DetectionResult {
+
+        val pauseMs = max(0L, segmentStartMs - previousSegmentEndMs)
 
         // Pass 1 Analysis
         val pass1Result = analyzePcmSlice(
@@ -51,19 +53,21 @@ class GenderDetector {
         val isUncertain = pass1Result.confidenceScore < CONFIDENCE_THRESHOLD || pass1Result.totalVoicedFrames < 15
 
         if (!isUncertain || fullPcmMono == null || fullPcmMono.isEmpty()) {
+            DiagnosticLogger.log(TAG, "Pass 1 Decisive ($segmentStartMs ms -> $segmentEndMs ms, Pause=$pauseMs ms): F0=${"%.1f".format(pass1Result.medianF0)}Hz, Conf=${"%.2f".format(pass1Result.confidenceScore)}, Voiced=${pass1Result.totalVoicedFrames}, Gender=${pass1Result.gender}")
             return pass1Result
         }
 
-        // Pass 2 Analysis: Expand window by 50% into adjacent audio (+-250ms)
-        Log.d(TAG, "Pass 1 uncertain (Voiced=${pass1Result.totalVoicedFrames}, Conf=${"%.2f".format(pass1Result.confidenceScore)}) -> Running Pass 2 Multi-Pass Expanded Analysis (+-250ms)…")
-
-        val expandedStartMs = max(0L, segmentStartMs - 250L)
+        // Pass 2 Analysis: Expand window (+-250ms) BUT clamp expandedStartMs to previousSegmentEndMs to avoid pulling in silence/breath noise
+        val clampedMinStartMs = max(previousSegmentEndMs, segmentStartMs)
+        val expandedStartMs = max(clampedMinStartMs, segmentStartMs - 250L)
         val expandedEndMs   = min((fullPcmMono.size * 1000L) / 16000L, segmentEndMs + 250L)
 
         val startSample = ((expandedStartMs * 16000) / 1000).toInt().coerceIn(0, fullPcmMono.size)
         val endSample   = ((expandedEndMs * 16000) / 1000).toInt().coerceIn(startSample, fullPcmMono.size)
 
         val expandedPcm = if (endSample > startSample) fullPcmMono.copyOfRange(startSample, endSample) else ShortArray(0)
+
+        DiagnosticLogger.log(TAG, "Pass 1 Uncertain ($segmentStartMs ms -> $segmentEndMs ms, Pause=$pauseMs ms, Conf=${"%.2f".format(pass1Result.confidenceScore)}) -> Running Pass 2 Clamped Expansion ($expandedStartMs ms -> $expandedEndMs ms)…")
 
         val pass2Result = analyzePcmSlice(
             pcmMono = expandedPcm,
@@ -79,7 +83,7 @@ class GenderDetector {
             pass1Result.copy(isPass2Triggered = true)
         }
 
-        Log.d(TAG, "Pass 2 Multi-Pass Result: medianF0=${"%.1f".format(finalResult.medianF0)}Hz, Conf=${"%.2f".format(finalResult.confidenceScore)}, Gender=${finalResult.gender}")
+        DiagnosticLogger.log(TAG, "Pass 2 Final Result: F0=${"%.1f".format(finalResult.medianF0)}Hz, Conf=${"%.2f".format(finalResult.confidenceScore)}, Voiced=${finalResult.totalVoicedFrames}, Gender=${finalResult.gender}")
         return finalResult
     }
 
@@ -97,8 +101,8 @@ class GenderDetector {
         val frameSize = (SAMPLE_RATE * (frameSizeMs / 1000.0)).toInt()
         val frameHop  = (SAMPLE_RATE * (frameHopMs / 1000.0)).toInt()
 
-        val minLag = (SAMPLE_RATE / 350.0).toInt().coerceAtLeast(1) // 45
-        val maxLag = (SAMPLE_RATE / 75.0).toInt().coerceAtMost(frameSize - 1) // 213
+        val minLag = (SAMPLE_RATE / 350.0).toInt().coerceAtLeast(1) // 45 (350Hz upper bound)
+        val maxLag = (SAMPLE_RATE / 75.0).toInt().coerceAtMost(frameSize - 1) // 213 (75Hz lower bound)
 
         val f0Estimates = mutableListOf<Float>()
         val peakValList = mutableListOf<Double>()
@@ -142,25 +146,16 @@ class GenderDetector {
                     }
                 }
 
-                if (peakVals.isNotEmpty()) {
+                if (peakLags.isNotEmpty()) {
                     val maxPeakVal = peakVals.maxOrNull() ?: 0.0
-                    val thresh = maxPeakVal * 0.70
-
-                    var bestLag = -1
-                    var bestVal = 0.0
-                    for (k in peakLags.indices) {
-                        if (peakVals[k] >= thresh) {
-                            bestLag = peakLags[k]
-                            bestVal = peakVals[k]
-                            break
-                        }
-                    }
-
-                    if (bestLag > 0) {
-                        val frameF0 = SAMPLE_RATE.toFloat() / bestLag.toFloat()
-                        if (frameF0 in 75.0f..450.0f) {
-                            f0Estimates.add(frameF0)
-                            peakValList.add(bestVal)
+                    for (i in peakLags.indices) {
+                        if (peakVals[i] >= 0.70 * maxPeakVal) {
+                            val f0 = SAMPLE_RATE.toFloat() / peakLags[i]
+                            if (f0 in 75.0f..350.0f) {
+                                f0Estimates.add(f0)
+                                peakValList.add(peakVals[i])
+                                break
+                            }
                         }
                     }
                 }
@@ -168,30 +163,23 @@ class GenderDetector {
             offset += frameHop
         }
 
-        if (f0Estimates.size < MIN_VOICED_FRAMES) {
-            return DetectionResult(0f, fallbackGender, f0Estimates.size, 0.0f, isCarriedOver = true)
+        if (f0Estimates.isEmpty()) {
+            return DetectionResult(0f, fallbackGender, 0, 0.0f, isCarriedOver = true)
         }
 
         f0Estimates.sort()
-        val medianF0 = if (f0Estimates.size % 2 == 0) {
-            (f0Estimates[f0Estimates.size / 2 - 1] + f0Estimates[f0Estimates.size / 2]) / 2.0f
-        } else {
-            f0Estimates[f0Estimates.size / 2]
-        }
+        val medianF0 = f0Estimates[f0Estimates.size / 2]
 
-        // Confidence score calculation C in [0.0, 1.0]
-        val avgPeakStrength = if (peakValList.isNotEmpty()) peakValList.average().toFloat() else 0.0f
-        val frameCoverageFactor = (f0Estimates.size.toFloat() / 30.0f).coerceIn(0.0f, 1.0f)
-        val confidenceScore = (avgPeakStrength * 0.7f + frameCoverageFactor * 0.3f).coerceIn(0.0f, 1.0f)
-
-        val classifiedGender = if (medianF0 < 165.0f) Gender.MALE else Gender.FEMALE
+        val gender = if (medianF0 < 165.0f) Gender.MALE else Gender.FEMALE
+        val avgPeakVal = if (peakValList.isNotEmpty()) peakValList.average().toFloat() else 0.0f
+        val voicedRatio = (f0Estimates.size.toFloat() / max(1, (pcmMono.size / frameHop))).coerceAtMost(1.0f)
+        val confidenceScore = (avgPeakVal * 0.7f + voicedRatio * 0.3f).coerceIn(0.0f, 1.0f)
 
         return DetectionResult(
             medianF0 = medianF0,
-            gender = classifiedGender,
+            gender = gender,
             totalVoicedFrames = f0Estimates.size,
-            confidenceScore = confidenceScore,
-            isCarriedOver = false
+            confidenceScore = confidenceScore
         )
     }
 }
