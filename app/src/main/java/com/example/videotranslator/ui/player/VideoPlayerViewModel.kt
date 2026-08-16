@@ -107,6 +107,10 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
     private val _detectedSourceLanguage = MutableStateFlow(Language.HINDI)
     val detectedSourceLanguage: StateFlow<Language> = _detectedSourceLanguage.asStateFlow()
 
+    /** Null = auto-detect, non-null = user manually selected the source language. */
+    private val _manualSourceLanguage = MutableStateFlow<Language?>(null)
+    val manualSourceLanguage: StateFlow<Language?> = _manualSourceLanguage.asStateFlow()
+
     private var pipelineJob: Job? = null
     private var ttsPollingJob: Job? = null
     private var prewarmJob: Job? = null
@@ -163,11 +167,17 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
+    // ── Manual mode ────────────────────────────────────────────────────────────
+    fun setManualSourceLanguage(lang: Language?) {
+        _manualSourceLanguage.value = lang
+        DiagnosticLogger.log(TAG, "Manual source language set to: ${lang?.name ?: "AUTO"}")
+    }
+
     // ── Video picking (Creates a brand-new unique run ID) ─────────────────────
     fun onVideoPicked(uri: Uri) {
         val newRunId = UUID.randomUUID().toString()
         val title = uri.lastPathSegment?.replace(Regex("[^a-zA-Z0-9_.-]"), " ")?.take(30) ?: "Video Run"
-        DiagnosticLogger.log(TAG, "New video picked: $uri (RunId: $newRunId)")
+        DiagnosticLogger.log(TAG, "New video picked: $uri (RunId: $newRunId, ManualLang: ${_manualSourceLanguage.value?.name ?: "AUTO"})")
 
         val newRun = VideoRun(
             runId = newRunId,
@@ -298,18 +308,28 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
             _detectedGender.value = globalGenderResult.gender
             DiagnosticLogger.log(TAG, "Global Audio Gender Baseline: ${globalGenderResult.gender} (Median F0 = ${"%.1f".format(globalGenderResult.medianF0)} Hz)")
 
-            // ── 3. Acoustic STT Dual-Probe & Whisper Native Language Detection ───
-            _processingState.value = ProcessingState.Loading("Probing acoustic speech (Hindi vs English vs Telugu)…", 0.38f)
-            val whisperResult = whisperRecognizer.detectLanguageNative(cleanedMono)
-            val sourceLang = if (whisperResult.confidence >= 0.70f && whisperResult.language == Language.TELUGU) {
-                Language.TELUGU
+            // ── 3. Language Detection (Manual Override or Acoustic Probe) ───
+            val manualLang = _manualSourceLanguage.value
+            val sourceLang: Language
+            if (manualLang != null) {
+                // Manual mode — skip all detection, use user's selection
+                sourceLang = manualLang
+                _processingState.value = ProcessingState.Loading("Using manually selected language: ${sourceLang.displayName}…", 0.38f)
+                DiagnosticLogger.log(TAG, "STAGE 3 - MANUAL MODE: User selected source language = $sourceLang (skipping auto-detection)")
             } else {
-                voskRecognizer.probeLanguage(cleanedMono)
+                // Auto mode — run Whisper + Vosk dual-probe
+                _processingState.value = ProcessingState.Loading("Probing acoustic speech (Hindi vs English vs Telugu)…", 0.38f)
+                val whisperResult = whisperRecognizer.detectLanguageNative(cleanedMono)
+                sourceLang = if (whisperResult.confidence >= 0.70f && whisperResult.language == Language.TELUGU) {
+                    Language.TELUGU
+                } else {
+                    voskRecognizer.probeLanguage(cleanedMono)
+                }
+                DiagnosticLogger.log(TAG, "STAGE 3 - AUTO MODE: Probed source language = $sourceLang (Whisper: ${whisperResult.language}, conf=${"%.2f".format(whisperResult.confidence)})")
             }
             _detectedSourceLanguage.value = sourceLang
             _currentLanguage.value = sourceLang
             applyVolumeForLanguage(sourceLang)
-            DiagnosticLogger.log(TAG, "STAGE 3 - Probed source language: $sourceLang (Whisper Native: ${whisperResult.language}, conf=${"%.2f".format(whisperResult.confidence)})")
 
             // ── 4. Full Transcribe (Vosk) on Cleaned Audio for Detected Language ──
             _processingState.value = ProcessingState.Loading("Transcribing speech for $sourceLang (High-Precision STT)…", 0.48f)

@@ -35,30 +35,151 @@ class VoskSpeechRecognizer(private val context: Context) {
     private var hiModel: Model? = null
     private var enModel: Model? = null
 
-    // High-frequency authentic English dictionary vocabulary
+    // Expanded high-frequency English dictionary (~500 words)
+    // Covers: function words, pronouns, common verbs, nouns, adjectives, adverbs, conjunctions
     private val englishVocabulary = setOf(
-        "the", "be", "to", "of", "and", "a", "in", "that", "have", "i", "it", "for", "not", "on", "with", "he",
+        // Function words & pronouns
+        "the", "be", "to", "of", "and", "in", "that", "have", "it", "for", "not", "on", "with", "he",
         "as", "you", "do", "at", "this", "but", "his", "by", "from", "they", "we", "say", "her", "she", "or",
         "an", "will", "my", "one", "all", "would", "there", "their", "what", "so", "up", "out", "if", "about",
         "who", "get", "which", "go", "me", "when", "make", "can", "like", "time", "no", "just", "him", "know",
         "take", "people", "into", "year", "your", "good", "some", "could", "them", "see", "other", "than",
         "then", "now", "look", "only", "come", "its", "over", "think", "also", "back", "after", "use", "two",
         "how", "our", "work", "first", "well", "way", "even", "new", "want", "because", "any", "these", "give",
-        "day", "most", "us", "hello", "today", "video", "speaking", "thank", "world", "going", "should", "place",
-        "something", "always", "together", "children", "important", "example", "different", "country", "family",
-        "speak", "speaks", "speaker", "record", "recording", "audio", "app", "features", "translate", "translation"
+        "day", "most", "us", "been", "has", "had", "did", "does", "am", "are", "is", "was", "were",
+        // Common verbs
+        "tell", "ask", "try", "need", "feel", "become", "leave", "put", "mean", "keep", "let", "begin",
+        "seem", "help", "show", "hear", "play", "run", "move", "live", "believe", "hold", "bring", "happen",
+        "must", "write", "provide", "sit", "stand", "lose", "pay", "meet", "include", "continue", "set",
+        "learn", "change", "lead", "understand", "watch", "follow", "stop", "create", "speak", "read", "allow",
+        "add", "spend", "grow", "open", "walk", "win", "offer", "remember", "love", "consider", "appear",
+        "buy", "wait", "serve", "die", "send", "expect", "build", "stay", "fall", "cut", "reach", "kill",
+        "remain", "suggest", "raise", "pass", "sell", "require", "report", "decide", "pull", "start",
+        "develop", "shall", "might", "may", "already", "still", "never", "very", "much", "many",
+        // Common nouns
+        "thing", "man", "woman", "child", "world", "life", "hand", "part", "place", "case", "week", "company",
+        "system", "program", "question", "government", "number", "night", "point", "home", "water", "room",
+        "mother", "area", "money", "story", "fact", "month", "lot", "right", "study", "book", "eye", "job",
+        "word", "business", "issue", "side", "kind", "head", "house", "service", "friend", "father", "power",
+        "hour", "game", "line", "end", "member", "law", "car", "city", "community", "name", "president",
+        "team", "minute", "idea", "body", "information", "group", "problem", "party", "result", "door",
+        "school", "state", "country", "student", "family", "class", "level", "language", "food", "music",
+        "today", "morning", "evening", "tomorrow", "yesterday",
+        // Common adjectives
+        "old", "great", "big", "high", "small", "large", "next", "early", "young", "important",
+        "few", "public", "bad", "same", "able", "last", "long", "little", "own", "left", "best",
+        "better", "sure", "free", "real", "different", "every", "each", "both", "true", "during",
+        "another", "such", "possible", "quite", "hard", "nice", "beautiful", "amazing", "wonderful",
+        // Common adverbs & connectors
+        "here", "too", "again", "once", "really", "actually", "always", "often", "sometimes", "usually",
+        "maybe", "perhaps", "please", "yes", "yeah", "okay", "ok", "right", "sorry", "hello", "hi",
+        "thanks", "thank", "welcome", "goodbye", "bye", "enough", "almost", "away", "off", "down",
+        "where", "why", "before", "between", "under", "since", "without", "however", "though",
+        "through", "while", "against", "within", "along", "above", "near", "until", "yet",
+        // Media & tech
+        "video", "audio", "phone", "camera", "screen", "channel", "subscribe", "watch", "share",
+        "record", "recording", "app", "features", "translate", "translation", "online", "internet",
+        "computer", "mobile", "software", "website", "social", "media", "content", "digital",
+        // Conversation
+        "speaking", "talking", "saying", "going", "coming", "looking", "making", "doing", "taking",
+        "getting", "something", "everything", "nothing", "anything", "someone", "everyone", "nobody",
+        "everybody", "children", "example", "together", "already", "actually", "probably", "especially",
+        "basically", "definitely", "absolutely", "certainly", "exactly", "completely", "totally"
     )
 
-    // High-frequency authentic Hindi Devanagari vocabulary
+    // Expanded high-frequency Hindi Devanagari dictionary (~500 words)
+    // Covers: postpositions, pronouns, verbs (all common forms), nouns, adjectives, adverbs, conjunctions
     private val hindiVocabulary = setOf(
-        "है", "हैं", "था", "थी", "थे", "होगा", "होगी", "मैं", "तुम", "आप", "वह", "यह", "हम", "वे", "और", "या",
-        "की", "के", "का", "में", "से", "को", "नहीं", "हाँ", "ठीक", "अच्छा", "बहुत", "थोड़ा", "जाना", "आना",
-        "करना", "देखना", "बोलना", "खाना", "नमस्ते", "शुक्रिया", "धन्यवाद", "कहा", "रहा", "रही", "रहे", "बात",
-        "लोग", "समय", "काम", "दिन", "साल", "घर", "देश", "नाम", "तरह", "बाद", "पहले", "साथ", "पास", "लिए",
-        "फिर", "लेकिन", "भी", "ही", "तो", "न", "तक", "पर", "सब", "कोई", "कुछ", "अपना", "अपनी", "अपने",
-        "क्या", "कैसे", "कब", "कहाँ", "क्यों", "कौन", "जैसे", "वैसे", "जब", "तब", "जहाँ", "वहाँ", "अगर",
-        "वीडियो", "ऑडियो", "फोन", "मोबाइल", "बातचीत", "सुनो", "देखो", "समझो", "बताओ", "चलो", "आज", "कल",
-        "परसों", "चाहते", "चाहती", "योजना", "बना", "बारिश", "मौसम", "तेजी", "धीमे", "समस्या", "ऐप"
+        // Postpositions & particles (extremely high frequency)
+        "है", "हैं", "था", "थी", "थे", "होगा", "होगी", "होता", "होती", "होते",
+        "की", "के", "का", "में", "से", "को", "पर", "ने", "तक", "वाला", "वाली", "वाले",
+        // Pronouns
+        "मैं", "मुझे", "मेरा", "मेरी", "मेरे", "हम", "हमें", "हमारा", "हमारी", "हमारे",
+        "तुम", "तुम्हें", "तुम्हारा", "तुम्हारी", "तुम्हारे", "तू", "तेरा", "तेरी",
+        "आप", "आपका", "आपकी", "आपके", "आपको",
+        "वह", "वो", "उसका", "उसकी", "उसके", "उसे", "उन्हें", "उनका", "उनकी", "उनके",
+        "यह", "ये", "इसका", "इसकी", "इसके", "इसे", "इन्हें", "इनका",
+        "वे", "कोई", "कुछ", "सब", "सबका", "हर", "कई", "दूसरा", "दूसरी",
+        "अपना", "अपनी", "अपने", "खुद", "स्वयं",
+        // Question words
+        "क्या", "कैसे", "कब", "कहाँ", "कहां", "क्यों", "कौन", "किसका", "किसकी", "किसने",
+        "कितना", "कितनी", "कितने", "किधर", "कैसा", "किस",
+        // Conjunctions & connectors
+        "और", "या", "लेकिन", "मगर", "पर", "परन्तु", "फिर", "इसलिए", "क्योंकि", "कि",
+        "जब", "तब", "जैसे", "वैसे", "जहाँ", "वहाँ", "जहां", "वहां", "अगर", "तो",
+        "भी", "ही", "बस", "सिर्फ", "केवल", "बल्कि", "चाहे", "हालांकि", "जबकि",
+        // Negation & affirmation
+        "नहीं", "ना", "न", "मत", "हाँ", "हां", "जी", "ठीक", "अच्छा", "बिल्कुल", "ज़रूर", "जरूर",
+        // Common verbs (base + frequent inflected forms)
+        "करना", "करता", "करती", "करते", "करो", "किया", "करें", "करेंगे", "करूँगा", "करूंगा",
+        "होना", "हूँ", "हूं", "हो", "हुआ", "हुई", "हुए",
+        "जाना", "जाता", "जाती", "जाते", "जाओ", "गया", "गयी", "गई", "गए", "जाएगा", "जाएंगे",
+        "आना", "आता", "आती", "आते", "आओ", "आया", "आई", "आए", "आएगा", "आयेगा",
+        "देना", "देता", "देती", "देते", "दो", "दिया", "दी", "दें", "देंगे",
+        "लेना", "लेता", "लेती", "लेते", "लो", "लिया", "ली", "लें", "लेंगे",
+        "कहना", "कहता", "कहती", "कहते", "कहो", "कहा", "कहें", "कहेंगे",
+        "बोलना", "बोलता", "बोलती", "बोलते", "बोलो", "बोला", "बोली", "बोले",
+        "देखना", "देखता", "देखती", "देखते", "देखो", "देखा", "देखी", "देखें", "देखिए",
+        "सुनना", "सुनता", "सुनती", "सुनते", "सुनो", "सुना", "सुनी", "सुनें", "सुनिए",
+        "समझना", "समझता", "समझती", "समझते", "समझो", "समझा", "समझी", "समझें", "समझिए",
+        "बताना", "बताता", "बताती", "बताते", "बताओ", "बताया", "बताई", "बताएं", "बताइए",
+        "खाना", "खाता", "खाती", "खाते", "खाओ", "खाया",
+        "पीना", "पीता", "पीती", "पीते", "पिया",
+        "रहना", "रहता", "रहती", "रहते", "रहा", "रही", "रहे", "रहो", "रहें",
+        "चलना", "चलता", "चलती", "चलते", "चलो", "चला", "चली", "चले", "चलें",
+        "सोचना", "सोचता", "सोचती", "सोचते", "सोचो", "सोचा",
+        "पढ़ना", "पढ़ता", "पढ़ती", "पढ़ते", "पढ़ो", "पढ़ा",
+        "लिखना", "लिखता", "लिखती", "लिखते", "लिखो", "लिखा",
+        "मिलना", "मिलता", "मिलती", "मिलते", "मिला", "मिली", "मिले", "मिलें",
+        "रखना", "रखता", "रखती", "रखते", "रखो", "रखा", "रखी",
+        "चाहना", "चाहता", "चाहती", "चाहते", "चाहिए", "चाहूँगा",
+        "पाना", "पाता", "पाती", "पाते", "पाया", "पाई",
+        "सकना", "सकता", "सकती", "सकते", "सका", "सकी", "सके",
+        "पूछना", "पूछता", "पूछती", "पूछते", "पूछा", "पूछो",
+        "बैठना", "बैठता", "बैठती", "बैठो", "बैठा", "बैठे",
+        "उठना", "उठता", "उठती", "उठो", "उठा", "उठी", "उठे",
+        "खेलना", "खेलता", "खेलती", "खेलते", "खेला", "खेलो",
+        "मानना", "मानता", "मानती", "मानते", "माना", "मानो",
+        "लगना", "लगता", "लगती", "लगते", "लगा", "लगी", "लगे",
+        "डालना", "डालता", "डालती", "डालो", "डाला",
+        "निकलना", "निकलता", "निकलती", "निकला",
+        "भेजना", "भेजता", "भेजती", "भेजो", "भेजा",
+        // Common nouns
+        "बात", "लोग", "आदमी", "औरत", "बच्चा", "बच्चे", "बच्ची", "लड़का", "लड़की",
+        "समय", "काम", "दिन", "रात", "सुबह", "शाम", "दोपहर", "साल", "महीना", "हफ्ता",
+        "घर", "घरों", "कमरा", "दरवाज़ा", "खिड़की",
+        "देश", "शहर", "गाँव", "गांव", "जगह", "रास्ता", "सड़क",
+        "नाम", "तरह", "तरीका", "बाद", "पहले", "बीच", "साथ", "पास", "ऊपर", "नीचे",
+        "लिए", "वजह", "कारण", "मतलब", "ज़रूरत", "जरूरत",
+        "पानी", "खाना", "दूध", "चाय", "रोटी",
+        "पैसा", "पैसे", "रुपया", "रुपये",
+        "दोस्त", "भाई", "बहन", "माँ", "मां", "पिता", "बाप", "बेटा", "बेटी",
+        "सरकार", "पार्टी", "नेता", "जनता",
+        "स्कूल", "कॉलेज", "पढ़ाई", "किताब", "शिक्षा",
+        "फ़िल्म", "फिल्म", "गाना", "संगीत",
+        "दुनिया", "ज़िंदगी", "जिंदगी", "जीवन", "मन", "दिल", "शरीर", "हाथ", "पैर", "आँख", "सिर",
+        // Adjectives
+        "बड़ा", "बड़ी", "बड़े", "छोटा", "छोटी", "छोटे",
+        "अच्छा", "अच्छी", "अच्छे", "बुरा", "बुरी", "बुरे",
+        "नया", "नयी", "नई", "नये", "नए", "पुराना", "पुरानी", "पुराने",
+        "ज़्यादा", "ज्यादा", "कम", "बहुत", "थोड़ा", "थोड़ी", "थोड़े",
+        "सही", "गलत", "ख़ास", "खास", "ज़रूरी", "जरूरी", "मुश्किल", "आसान",
+        "पहला", "पहली", "पहले", "दूसरा", "दूसरी", "दूसरे", "तीसरा", "तीसरी",
+        "सारा", "सारी", "सारे", "पूरा", "पूरी", "पूरे",
+        // Adverbs & time
+        "आज", "कल", "परसों", "अभी", "तभी", "यहाँ", "यहां", "वहाँ", "वहां",
+        "ऐसा", "ऐसी", "ऐसे", "वैसा", "वैसी",
+        "शायद", "ज़रा", "जरा", "बस",
+        // Common expressions & greetings
+        "नमस्ते", "नमस्कार", "शुक्रिया", "धन्यवाद", "माफ़", "माफ",
+        // Modern/tech
+        "वीडियो", "ऑडियो", "फोन", "मोबाइल", "ऐप", "इंटरनेट", "कंप्यूटर",
+        "बातचीत", "योजना", "बना", "बनाना", "बनाया", "बनाई",
+        "बारिश", "मौसम", "तेजी", "धीमे", "समस्या", "हल",
+        "ख़बर", "खबर", "ख़बरें", "खबरें", "अख़बार", "अखबार",
+        // Numbers as words
+        "एक", "दो", "तीन", "चार", "पाँच", "पांच", "छह", "सात", "आठ", "नौ", "दस",
+        "सौ", "हज़ार", "हजार", "लाख", "करोड़"
     )
 
     private data class WordInfo(
@@ -166,18 +287,21 @@ class VoskSpeechRecognizer(private val context: Context) {
         )
 
         val detected = when {
-            // Hindi is authentic & valid (Hindi priority for Devanagari script)
-            hiAuthenticScore >= 0.06f && hiValidityRatio >= 0.25f && hiAuthenticScore > enAuthenticScore * 1.1f -> Language.HINDI
+            // Strong Hindi signal: decent dictionary match AND outscores English
+            hiAuthenticScore >= 0.03f && hiValidityRatio >= 0.15f && hiAuthenticScore > enAuthenticScore * 0.9f -> Language.HINDI
 
-            // English is authentic & valid
-            mEn != null && enAuthenticScore >= 0.08f && enValidityRatio >= 0.35f && enAuthenticScore > hiAuthenticScore * 1.2f -> Language.ENGLISH
+            // Strong English signal: high dictionary match AND clearly outscores Hindi
+            mEn != null && enAuthenticScore >= 0.05f && enValidityRatio >= 0.25f && enAuthenticScore > hiAuthenticScore * 1.5f -> Language.ENGLISH
 
-            // Both models failed vocabulary validity check (< 20% real dictionary words) -> TELUGU by elimination
-            enValidityRatio < 0.20f && hiValidityRatio < 0.20f -> Language.TELUGU
+            // Hindi wins on relative comparison when English has very low validity (< 12%)
+            hiValidityRatio >= 0.10f && enValidityRatio < 0.12f -> Language.HINDI
 
-            // Fallback comparison based on authentic score
+            // Both models failed vocabulary validity check (< 10% real dictionary words) -> TELUGU by elimination
+            enValidityRatio < 0.10f && hiValidityRatio < 0.10f -> Language.TELUGU
+
+            // Fallback: prefer whichever has higher authentic score, with English needing stronger evidence
             hiAuthenticScore >= enAuthenticScore -> Language.HINDI
-            mEn != null && enAuthenticScore > hiAuthenticScore && enValidityRatio >= 0.30f -> Language.ENGLISH
+            mEn != null && enAuthenticScore > hiAuthenticScore && enValidityRatio >= 0.20f -> Language.ENGLISH
             else -> Language.TELUGU
         }
 

@@ -96,13 +96,24 @@ fun VideoPlayerScreen(
 
     var showLogSheet     by remember { mutableStateOf(false) }
     var showLibrarySheet by remember { mutableStateOf(false) }
+    var detectionMode    by remember { mutableStateOf("auto") }  // "auto" or "manual"
+    var manualLanguage   by remember { mutableStateOf(Language.HINDI) }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     val context        = LocalContext.current
 
     val videoPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.GetContent()
-    ) { uri: Uri? -> uri?.let { viewModel.onVideoPicked(it) } }
+    ) { uri: Uri? ->
+        uri?.let {
+            if (detectionMode == "manual") {
+                viewModel.setManualSourceLanguage(manualLanguage)
+            } else {
+                viewModel.setManualSourceLanguage(null)
+            }
+            viewModel.onVideoPicked(it)
+        }
+    }
 
     DisposableEffect(lifecycleOwner) {
         val obs = LifecycleEventObserver { _, event ->
@@ -141,7 +152,11 @@ fun VideoPlayerScreen(
                 PickerCard(
                     onPick = { videoPicker.launch("video/*") },
                     onOpenLibrary = { showLibrarySheet = true },
-                    libraryCount = libraryRuns.size
+                    libraryCount = libraryRuns.size,
+                    detectionMode = detectionMode,
+                    onDetectionModeChanged = { detectionMode = it },
+                    manualLanguage = manualLanguage,
+                    onManualLanguageChanged = { manualLanguage = it }
                 )
             } else {
                 VideoSurface(viewModel = viewModel)
@@ -305,8 +320,143 @@ private fun HeaderIconButton(icon: androidx.compose.ui.graphics.vector.ImageVect
 // ─────────────────────────── Picker Card ─────────────────────────────────────
 
 @Composable
-private fun PickerCard(onPick: () -> Unit, onOpenLibrary: () -> Unit, libraryCount: Int) {
+private fun PickerCard(
+    onPick: () -> Unit,
+    onOpenLibrary: () -> Unit,
+    libraryCount: Int,
+    detectionMode: String,
+    onDetectionModeChanged: (String) -> Unit,
+    manualLanguage: Language,
+    onManualLanguageChanged: (Language) -> Unit
+) {
     Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+        // ── Detection Mode Toggle ──
+        SurfaceCard {
+            Text(
+                "DETECTION MODE",
+                color = MutedLabel,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 2.sp
+            )
+            Spacer(Modifier.height(10.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                listOf("auto" to "Automatic", "manual" to "Manual").forEach { (mode, label) ->
+                    val isSelected = detectionMode == mode
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(
+                                if (isSelected) GoldGradient
+                                else Brush.linearGradient(listOf(BgElevated, BgElevated))
+                            )
+                            .border(
+                                1.dp,
+                                if (isSelected) Gold else BorderGold,
+                                RoundedCornerShape(12.dp)
+                            )
+                            .clickable { onDetectionModeChanged(mode) }
+                            .padding(vertical = 12.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                label,
+                                color = if (isSelected) Color(0xFF1A1000) else Ivory,
+                                fontSize = 13.sp,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                            )
+                            Text(
+                                if (mode == "auto") "AI detects language" else "You select language",
+                                color = if (isSelected) Color(0xFF4A3000) else MutedLabel,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Manual Language Selector (only in manual mode) ──
+        AnimatedVisibility(
+            visible = detectionMode == "manual",
+            enter = fadeIn(tween(300)) + expandVertically(tween(300)),
+            exit = fadeOut(tween(200)) + shrinkVertically(tween(200))
+        ) {
+            SurfaceCard(borderColor = Gold.copy(alpha = 0.25f)) {
+                Text(
+                    "SELECT SOURCE LANGUAGE",
+                    color = MutedLabel,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 2.sp
+                )
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Language.entries.forEach { lang ->
+                        val isSelected = manualLanguage == lang
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(
+                                    if (isSelected) Brush.linearGradient(
+                                        listOf(
+                                            SuccessGreen.copy(alpha = 0.15f),
+                                            SuccessGreen.copy(alpha = 0.08f)
+                                        )
+                                    )
+                                    else Brush.linearGradient(listOf(BgElevated, BgElevated))
+                                )
+                                .border(
+                                    1.5.dp,
+                                    if (isSelected) SuccessGreen else BorderGold,
+                                    RoundedCornerShape(12.dp)
+                                )
+                                .clickable { onManualLanguageChanged(lang) }
+                                .padding(vertical = 14.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    lang.displayName,
+                                    color = if (isSelected) SuccessGreen else Ivory,
+                                    fontSize = 14.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                )
+                                if (isSelected) {
+                                    Text(
+                                        "✓ Selected",
+                                        color = SuccessGreen.copy(alpha = 0.8f),
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "The video's spoken language. Translation & gender detection are still automatic.",
+                    color = IvoryDim,
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp
+                )
+            }
+        }
+
+        Spacer(Modifier.height(4.dp))
+
+        // ── Video Picker Button ──
         SurfaceCard(
             modifier = Modifier
                 .fillMaxWidth()
@@ -315,7 +465,7 @@ private fun PickerCard(onPick: () -> Unit, onOpenLibrary: () -> Unit, libraryCou
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 40.dp),
+                    .padding(vertical = 28.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 // Icon circle
@@ -351,7 +501,10 @@ private fun PickerCard(onPick: () -> Unit, onOpenLibrary: () -> Unit, libraryCou
                 Spacer(Modifier.height(6.dp))
 
                 Text(
-                    "Translates Hindi dialogue → English & Telugu\nPreserves background music • Gender-matched voice",
+                    if (detectionMode == "auto")
+                        "Auto-detects Hindi, English or Telugu dialogue\nTranslates → other languages • Gender-matched voice"
+                    else
+                        "Translates ${manualLanguage.displayName} dialogue → other languages\nGender-matched voice • Background music preserved",
                     color = IvoryDim,
                     fontSize = 12.sp,
                     textAlign = TextAlign.Center,
