@@ -18,6 +18,7 @@ private const val TAG = "DisfluencyCleaner"
  *  4. **Expressive Interjection Protection**: Explicitly preserves valid short reactions
  *     in Hindi ("वाह", "अरे", "ओह", "अच्छा", "हाँ") and English ("wow", "oh", "hey", "yeah", "ouch", "ah", "bravo", "well")
  *     when acting as standalone reaction units.
+ *  5. **Clean Formatting & Punctuation**: Strips leftover leading punctuation and ensures capitalized sentence starts.
  */
 class DisfluencyCleaner {
 
@@ -83,7 +84,7 @@ class DisfluencyCleaner {
 
         // 3. Remove disfluent hesitation fillers in full sentences
         for (filler in hesitationFillers) {
-            val fillerRegex = Regex("(?i)(?<=\\s|^)$filler(?=\\s|$)")
+            val fillerRegex = Regex("(?i)\\b${Regex.escape(filler)}\\b")
             if (fillerRegex.containsMatchIn(processing)) {
                 disfluenciesFound.add("Filler: '$filler'")
                 processing = fillerRegex.replace(processing, " ")
@@ -116,7 +117,11 @@ class DisfluencyCleaner {
             i++
         }
 
-        val cleanedFinal = cleanedTokens.joinToString(" ").replace(Regex("\\s+"), " ").trim()
+        val cleanedFinal = cleanedTokens.joinToString(" ")
+            .replace(Regex("\\s+"), " ")
+            .replace(Regex("^[!?,.–—-\\s]+"), "")
+            .replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+            .trim()
 
         if (disfluenciesFound.isNotEmpty()) {
             DiagnosticLogger.log(TAG, "DISFLUENCY CLEANUP: \"$trimmed\" → \"$cleanedFinal\" (Removed: ${disfluenciesFound.joinToString(", ")})")
