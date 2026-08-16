@@ -124,6 +124,10 @@ class NoiseSuppressor {
             }
         }
 
+        val quietNoiseRms = noiseProfile.average()
+        val adaptiveAlpha = if (quietNoiseRms < 12.0) 1.05 else if (quietNoiseRms < 30.0) 1.25 else 1.50
+        DiagnosticLogger.log(TAG, "ADAPTIVE DSP NOISE SUPPRESSION: quietNoiseRms=${"%.1f".format(quietNoiseRms)} -> adaptiveAlpha=${"%.2f".format(adaptiveAlpha)}")
+
         // 4. Spectral Subtraction + Wind HPF + Transient Attenuation Reconstruction
         val outAudio = DoubleArray(pcmMono.size)
         val normWindowSum = DoubleArray(pcmMono.size)
@@ -149,9 +153,9 @@ class NoiseSuppressor {
                 // 4a. Wind HPF cutoff (zero out low frequencies < 90 Hz)
                 val hpfMag = if (k < hpfBinCutoff) 0.0 else origMag
 
-                // 4b. Fan/AC Hum spectral subtraction
+                // 4b. Adaptive Fan/AC Hum spectral subtraction
                 val noiseMag = noiseProfile[k]
-                var subMag = max(hpfMag - OVER_SUBTRACTION * noiseMag, SPECTRAL_FLOOR * hpfMag)
+                var subMag = max(hpfMag - adaptiveAlpha * noiseMag, SPECTRAL_FLOOR * hpfMag)
 
                 // 4c. Targeted horn transient attenuation
                 subMag *= transientAttenFactor

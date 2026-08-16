@@ -26,8 +26,8 @@ private const val MODEL_EN_ASSET_ZIP = "model-en-small.zip"
  *  2. Validates recognized words against authentic English and Hindi dictionary vocabularies.
  *  3. Computes authentic scores: `score = selfReportedConfidence * dictionaryValidityRatio`.
  *  4. Decision rules:
- *     - English authentic & vocabulary valid (ratio >= 35%) -> ENGLISH
  *     - Hindi authentic & vocabulary valid (ratio >= 35%) -> HINDI
+ *     - English authentic & vocabulary valid (ratio >= 35%) -> ENGLISH
  *     - Both models fail vocabulary check (< 30% dictionary words) -> TELUGU (by elimination)
  */
 class VoskSpeechRecognizer(private val context: Context) {
@@ -45,7 +45,8 @@ class VoskSpeechRecognizer(private val context: Context) {
         "then", "now", "look", "only", "come", "its", "over", "think", "also", "back", "after", "use", "two",
         "how", "our", "work", "first", "well", "way", "even", "new", "want", "because", "any", "these", "give",
         "day", "most", "us", "hello", "today", "video", "speaking", "thank", "world", "going", "should", "place",
-        "something", "always", "together", "children", "important", "example", "different", "country", "family"
+        "something", "always", "together", "children", "important", "example", "different", "country", "family",
+        "speak", "speaks", "speaker", "record", "recording", "audio", "app", "features", "translate", "translation"
     )
 
     // High-frequency authentic Hindi Devanagari vocabulary
@@ -55,7 +56,9 @@ class VoskSpeechRecognizer(private val context: Context) {
         "करना", "देखना", "बोलना", "खाना", "नमस्ते", "शुक्रिया", "धन्यवाद", "कहा", "रहा", "रही", "रहे", "बात",
         "लोग", "समय", "काम", "दिन", "साल", "घर", "देश", "नाम", "तरह", "बाद", "पहले", "साथ", "पास", "लिए",
         "फिर", "लेकिन", "भी", "ही", "तो", "न", "तक", "पर", "सब", "कोई", "कुछ", "अपना", "अपनी", "अपने",
-        "क्या", "कैसे", "कब", "कहाँ", "क्यों", "कौन", "जैसे", "वैसे", "जब", "तब", "जहाँ", "वहाँ", "अगर"
+        "क्या", "कैसे", "कब", "कहाँ", "क्यों", "कौन", "जैसे", "वैसे", "जब", "तब", "जहाँ", "वहाँ", "अगर",
+        "वीडियो", "ऑडियो", "फोन", "मोबाइल", "बातचीत", "सुनो", "देखो", "समझो", "बताओ", "चलो", "आज", "कल",
+        "परसों", "चाहते", "चाहती", "योजना", "बना", "बारिश", "मौसम", "तेजी", "धीमे", "समस्या", "ऐप"
     )
 
     private data class WordInfo(
@@ -150,7 +153,7 @@ class VoskSpeechRecognizer(private val context: Context) {
 
             enValidCount = enWords.count { wordInfo ->
                 val norm = wordInfo.word.trim().lowercase().replace(Regex("[!?,.–—\\-]"), "")
-                englishVocabulary.contains(norm) || (norm.length >= 4 && norm.all { c -> c in 'a'..'z' })
+                norm.length >= 2 && englishVocabulary.contains(norm)
             }
             enValidityRatio = if (enWords.isNotEmpty()) enValidCount.toFloat() / enWords.size else 0f
             enAuthenticScore = enScore * enValidityRatio
@@ -163,18 +166,18 @@ class VoskSpeechRecognizer(private val context: Context) {
         )
 
         val detected = when {
+            // Hindi is authentic & valid (Hindi priority for Devanagari script)
+            hiAuthenticScore >= 0.06f && hiValidityRatio >= 0.25f && hiAuthenticScore > enAuthenticScore * 1.1f -> Language.HINDI
+
             // English is authentic & valid
             mEn != null && enAuthenticScore >= 0.08f && enValidityRatio >= 0.35f && enAuthenticScore > hiAuthenticScore * 1.2f -> Language.ENGLISH
 
-            // Hindi is authentic & valid
-            hiAuthenticScore >= 0.08f && hiValidityRatio >= 0.35f && hiAuthenticScore > enAuthenticScore * 1.2f -> Language.HINDI
-
-            // Both models failed vocabulary validity check (< 30% real dictionary words) -> TELUGU by elimination
-            enValidityRatio < 0.30f && hiValidityRatio < 0.30f -> Language.TELUGU
+            // Both models failed vocabulary validity check (< 20% real dictionary words) -> TELUGU by elimination
+            enValidityRatio < 0.20f && hiValidityRatio < 0.20f -> Language.TELUGU
 
             // Fallback comparison based on authentic score
+            hiAuthenticScore >= enAuthenticScore -> Language.HINDI
             mEn != null && enAuthenticScore > hiAuthenticScore && enValidityRatio >= 0.30f -> Language.ENGLISH
-            hiAuthenticScore > enAuthenticScore && hiValidityRatio >= 0.30f -> Language.HINDI
             else -> Language.TELUGU
         }
 
