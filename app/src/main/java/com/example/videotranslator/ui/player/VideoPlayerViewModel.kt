@@ -20,6 +20,7 @@ import com.example.videotranslator.model.Gender
 import com.example.videotranslator.model.Language
 import com.example.videotranslator.model.ProcessingState
 import com.example.videotranslator.model.TranslationSegment
+import com.example.videotranslator.stt.SourceLanguageDetector
 import com.example.videotranslator.stt.VoskSpeechRecognizer
 import com.example.videotranslator.translation.TranslationManager
 import com.example.videotranslator.tts.TtsManager
@@ -57,6 +58,7 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
     private val voskRecognizer     = VoskSpeechRecognizer(application)
     private val translationManager = TranslationManager()
     private val genderDetector     = GenderDetector()
+    private val langDetector       = SourceLanguageDetector()
     val ttsManager                 = TtsManager(application)
     private val segmentAudioPlayer = SegmentAudioPlayer()
     private val instrumental       = InstrumentalPlayer(viewModelScope)
@@ -99,6 +101,9 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
     private val _libraryRuns = MutableStateFlow<List<VideoRun>>(emptyList())
     val libraryRuns: StateFlow<List<VideoRun>> = _libraryRuns.asStateFlow()
+
+    private val _detectedSourceLanguage = MutableStateFlow(Language.HINDI)
+    val detectedSourceLanguage: StateFlow<Language> = _detectedSourceLanguage.asStateFlow()
 
     private var pipelineJob: Job? = null
     private var ttsPollingJob: Job? = null
@@ -210,6 +215,11 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 if (instrFile.exists()) instrumental.loadFromFile(instrFile)
                 
                 _detectedGender.value = if (run.detectedGender == "FEMALE") Gender.FEMALE else Gender.MALE
+                _detectedSourceLanguage.value = when (run.detectedSourceLanguage) {
+                    "TELUGU"  -> Language.TELUGU
+                    "ENGLISH" -> Language.ENGLISH
+                    else      -> Language.HINDI
+                }
                 _processingState.value = ProcessingState.Ready
                 startTtsPolling()
                 DiagnosticLogger.log(TAG, "Past run [${run.runId}] loaded instantly from cache ✓")
@@ -309,9 +319,19 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 return
             }
 
-            // ── 5. Contextual Translation & Back-Translation Verification ─
-            _processingState.value = ProcessingState.Loading("Translating & verifying full sentence context…", 0.72f)
-            val translatedSegments = translationManager.translate(rawSegments)
+            // ── 5. Auto Source Language Detection ─────────────────────────
+            _processingState.value = ProcessingState.Loading("Detecting source language…", 0.68f)
+            val langDetection = langDetector.detect(rawSegments)
+            val sourceLang = langDetection.detectedLanguage
+            _detectedSourceLanguage.value = sourceLang
+            // Default playback to source language (original)
+            _currentLanguage.value = sourceLang
+            applyVolumeForLanguage(sourceLang)
+            DiagnosticLogger.log(TAG, "Detected source language: $sourceLang")
+
+            // ── 6. Contextual Translation & Back-Translation Verification ─
+            _processingState.value = ProcessingState.Loading("Translating & verifying (${sourceLang} → other languages)…", 0.72f)
+            val translatedSegments = translationManager.translate(rawSegments, sourceLang)
 
             // ── 5b. Phase 1: Multi-Signal Ensemble Gender Analysis (all segments) ─
             val totalSegs = translatedSegments.size.coerceAtLeast(1)
@@ -377,19 +397,21 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
                 val targetDurationMs = (seg.endMs - seg.startMs).coerceAtLeast(300L)
 
+                // Pre-render all three language dub tracks
                 val enFile = File(renderedDir, "seg_${idx}_en.wav")
                 ttsManager.selectVoiceForGender(Language.ENGLISH, segmentGender)
                 val enRenderedMs = ttsManager.synthesizeToFile(seg.english, enFile)
-                val enSpeedRatio = if (enRenderedMs > 0) {
-                    (enRenderedMs.toFloat() / targetDurationMs.toFloat()).coerceIn(0.75f, 1.5f)
-                } else 1.0f
+                val enSpeedRatio = if (enRenderedMs > 0) (enRenderedMs.toFloat() / targetDurationMs).coerceIn(0.75f, 1.5f) else 1.0f
 
                 val teFile = File(renderedDir, "seg_${idx}_te.wav")
                 ttsManager.selectVoiceForGender(Language.TELUGU, segmentGender)
                 val teRenderedMs = ttsManager.synthesizeToFile(seg.telugu, teFile)
-                val teSpeedRatio = if (teRenderedMs > 0) {
-                    (teRenderedMs.toFloat() / targetDurationMs.toFloat()).coerceIn(0.75f, 1.5f)
-                } else 1.0f
+                val teSpeedRatio = if (teRenderedMs > 0) (teRenderedMs.toFloat() / targetDurationMs).coerceIn(0.75f, 1.5f) else 1.0f
+
+                val hiFile = File(renderedDir, "seg_${idx}_hi.wav")
+                ttsManager.selectVoiceForGender(Language.HINDI, segmentGender)
+                val hiRenderedMs = ttsManager.synthesizeToFile(seg.hindi, hiFile)
+                val hiSpeedRatio = if (hiRenderedMs > 0) (hiRenderedMs.toFloat() / targetDurationMs).coerceIn(0.75f, 1.5f) else 1.0f
 
                 finalProcessedSegments.add(
                     seg.copy(
@@ -397,7 +419,10 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
                         englishAudioPath = enFile.absolutePath,
                         englishSpeedRatio = enSpeedRatio,
                         teluguAudioPath = teFile.absolutePath,
-                        teluguSpeedRatio = teSpeedRatio
+                        teluguSpeedRatio = teSpeedRatio,
+                        hindiAudioPath = hiFile.absolutePath,
+                        hindiSpeedRatio = hiSpeedRatio,
+                        detectedSourceLanguage = sourceLang.name
                     )
                 )
             }
@@ -410,7 +435,8 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
             libraryRepo.getRun(runId)?.copy(
                 status = "Ready",
                 segmentCount = finalProcessedSegments.size,
-                detectedGender = globalGenderResult.gender.name
+                detectedGender = globalGenderResult.gender.name,
+                detectedSourceLanguage = sourceLang.name
             )?.let { libraryRepo.saveRun(it) }
             refreshLibrary()
 
@@ -462,10 +488,13 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     private fun applyVolumeForLanguage(lang: Language) {
-        if (lang == Language.HINDI) {
+        val src = _detectedSourceLanguage.value
+        if (lang == src) {
+            // Playing original audio — full video, mute TTS overlay
             exoPlayer.volume = EXOPLAYER_FULL
             instrumental.stop()
         } else {
+            // Playing dubbed translation — mute video, play TTS + music overlay
             exoPlayer.volume = EXOPLAYER_MUTED
             instrumental.stop()
         }
@@ -477,8 +506,11 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
         ttsPollingJob = viewModelScope.launch {
             while (isActive) {
                 val currentLang = _currentLanguage.value
+                val srcLang     = _detectedSourceLanguage.value
                 val runId = _currentRunId.value
-                if (currentLang != Language.HINDI && exoPlayer.isPlaying && runId != null) {
+
+                // When playing original language, ExoPlayer handles audio — no TTS overlay needed
+                if (currentLang != srcLang && exoPlayer.isPlaying && runId != null) {
                     val pos = exoPlayer.currentPosition
                     val segments = cache.loadRun(runId) ?: emptyList()
 
@@ -493,7 +525,7 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
                         val (audioPath, speedRatio) = when (currentLang) {
                             Language.ENGLISH -> Pair(activeSeg.englishAudioPath, activeSeg.englishSpeedRatio)
                             Language.TELUGU  -> Pair(activeSeg.teluguAudioPath,  activeSeg.teluguSpeedRatio)
-                            Language.HINDI   -> Pair("", 1.0f)
+                            Language.HINDI   -> Pair(activeSeg.hindiAudioPath,   activeSeg.hindiSpeedRatio)
                         }
 
                         if (audioPath.isNotBlank() && File(audioPath).exists()) {

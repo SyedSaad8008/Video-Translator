@@ -24,6 +24,7 @@ data class VideoRun(
     val videoTitle: String,
     val timestampMs: Long = System.currentTimeMillis(),
     val detectedGender: String = "MALE",
+    val detectedSourceLanguage: String = "HINDI", // "HINDI", "TELUGU", "ENGLISH"
     val segmentCount: Int = 0,
     val status: String = "Ready" // "Ready", "Processing", "Error"
 ) {
@@ -55,6 +56,7 @@ class VideoLibraryRepository(private val context: Context) {
                         videoTitle = obj.optString("videoTitle", "Video Run"),
                         timestampMs = obj.optLong("timestampMs", System.currentTimeMillis()),
                         detectedGender = obj.optString("detectedGender", "MALE"),
+                        detectedSourceLanguage = obj.optString("detectedSourceLanguage", "HINDI"),
                         segmentCount = obj.optInt("segmentCount", 0),
                         status = obj.optString("status", "Ready")
                     )
@@ -86,6 +88,7 @@ class VideoLibraryRepository(private val context: Context) {
                     put("videoTitle", r.videoTitle)
                     put("timestampMs", r.timestampMs)
                     put("detectedGender", r.detectedGender)
+                    put("detectedSourceLanguage", r.detectedSourceLanguage)
                     put("segmentCount", r.segmentCount)
                     put("status", r.status)
                 }
@@ -110,6 +113,7 @@ class VideoLibraryRepository(private val context: Context) {
                     put("videoTitle", r.videoTitle)
                     put("timestampMs", r.timestampMs)
                     put("detectedGender", r.detectedGender)
+                    put("detectedSourceLanguage", r.detectedSourceLanguage)
                     put("segmentCount", r.segmentCount)
                     put("status", r.status)
                 }

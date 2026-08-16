@@ -85,13 +85,14 @@ private val GoldGradient  = Brush.linearGradient(listOf(GoldLight, Gold, GoldDim
 fun VideoPlayerScreen(
     viewModel: VideoPlayerViewModel = viewModel()
 ) {
-    val processingState by viewModel.processingState.collectAsStateWithLifecycle()
-    val currentLanguage by viewModel.currentLanguage.collectAsStateWithLifecycle()
-    val missingVoice    by viewModel.missingVoiceWarning.collectAsStateWithLifecycle()
-    val voiceStatus     by viewModel.voiceAvailabilityStatus.collectAsStateWithLifecycle()
-    val videoUri        by viewModel.videoUri.collectAsStateWithLifecycle()
-    val libraryRuns     by viewModel.libraryRuns.collectAsStateWithLifecycle()
-    val logText         by DiagnosticLogger.logTextFlow.collectAsStateWithLifecycle()
+    val processingState    by viewModel.processingState.collectAsStateWithLifecycle()
+    val currentLanguage    by viewModel.currentLanguage.collectAsStateWithLifecycle()
+    val missingVoice       by viewModel.missingVoiceWarning.collectAsStateWithLifecycle()
+    val voiceStatus        by viewModel.voiceAvailabilityStatus.collectAsStateWithLifecycle()
+    val videoUri           by viewModel.videoUri.collectAsStateWithLifecycle()
+    val libraryRuns        by viewModel.libraryRuns.collectAsStateWithLifecycle()
+    val logText            by DiagnosticLogger.logTextFlow.collectAsStateWithLifecycle()
+    val detectedSourceLang by viewModel.detectedSourceLanguage.collectAsStateWithLifecycle()
 
     var showLogSheet     by remember { mutableStateOf(false) }
     var showLibrarySheet by remember { mutableStateOf(false) }
@@ -171,9 +172,13 @@ fun VideoPlayerScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    LanguageSelector(currentLanguage, viewModel::switchLanguage)
+                    LanguageSelector(
+                        currentLanguage    = currentLanguage,
+                        sourceLanguage     = detectedSourceLang,
+                        onLanguageSelected = viewModel::switchLanguage
+                    )
                     Spacer(Modifier.height(10.dp))
-                    MusicHint(currentLanguage)
+                    MusicHint(currentLanguage, detectedSourceLang)
                     Spacer(Modifier.height(14.dp))
                     ActionButtonRow(
                         onUploadNew = { videoPicker.launch("video/*") },
@@ -185,7 +190,7 @@ fun VideoPlayerScreen(
             Spacer(Modifier.height(8.dp))
 
             // Voice remediation prompt
-            AnimatedVisibility(visible = missingVoice && currentLanguage != Language.HINDI) {
+            AnimatedVisibility(visible = missingVoice && currentLanguage != detectedSourceLang) {
                 VoiceRemediationCard(
                     status = voiceStatus,
                     language = currentLanguage,
@@ -523,6 +528,7 @@ private fun ErrorCard(message: String, onRetry: () -> Unit) {
 @Composable
 private fun LanguageSelector(
     currentLanguage: Language,
+    sourceLanguage: Language,
     onLanguageSelected: (Language) -> Unit
 ) {
     SurfaceCard {
@@ -540,6 +546,7 @@ private fun LanguageSelector(
         ) {
             Language.entries.forEach { lang ->
                 val isSelected = currentLanguage == lang
+                val isOriginal = lang == sourceLanguage
                 Box(
                     modifier = Modifier
                         .weight(1f)
@@ -554,15 +561,27 @@ private fun LanguageSelector(
                             RoundedCornerShape(12.dp)
                         )
                         .clickable { onLanguageSelected(lang) }
-                        .padding(vertical = 12.dp),
+                        .padding(vertical = 12.dp, horizontal = 4.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(
-                        lang.displayName,
-                        color = if (isSelected) Color(0xFF1A1000) else Ivory,
-                        fontSize = 13.sp,
-                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                    )
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            lang.displayName,
+                            color = if (isSelected) Color(0xFF1A1000) else Ivory,
+                            fontSize = 13.sp,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                            textAlign = TextAlign.Center
+                        )
+                        if (isOriginal) {
+                            Text(
+                                "Original",
+                                color = if (isSelected) Color(0xFF4A3000) else GoldDim,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                letterSpacing = 0.5.sp
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -572,8 +591,8 @@ private fun LanguageSelector(
 // ─────────────────────────── Music Hint ──────────────────────────────────────
 
 @Composable
-private fun MusicHint(language: Language) {
-    if (language == Language.HINDI) return
+private fun MusicHint(language: Language, sourceLanguage: Language) {
+    if (language == sourceLanguage) return
     Box(
         modifier = Modifier
             .fillMaxWidth()

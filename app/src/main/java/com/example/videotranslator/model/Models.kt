@@ -11,8 +11,9 @@ enum class Gender {
 
 /**
  * One recognised speech segment with start/end timestamps (ms),
- * original Hindi text, translations, per-segment speaker gender,
- * and pre-rendered audio file metadata.
+ * transcribed source text, all three language translations,
+ * per-segment speaker gender, pre-rendered audio file paths,
+ * and detected source language.
  */
 @Serializable
 data class TranslationSegment(
@@ -25,14 +26,20 @@ data class TranslationSegment(
     val englishSpeedRatio: Float = 1.0f,
     val teluguAudioPath: String = "",
     val teluguSpeedRatio: Float = 1.0f,
-    val gender: Gender = Gender.MALE
+    val hindiAudioPath: String = "",
+    val hindiSpeedRatio: Float = 1.0f,
+    val gender: Gender = Gender.MALE,
+    val detectedSourceLanguage: String = "HINDI"  // "HINDI", "TELUGU", "ENGLISH"
 )
 
 /** Target language for playback. */
 enum class Language(val displayName: String, val locale: String) {
-    HINDI("हिंदी (Original)", "hi-IN"),
+    HINDI("हिंदी", "hi-IN"),
     ENGLISH("English", "en-US"),
     TELUGU("తెలుగు", "te-IN");
+
+    fun displayNameWithOriginalTag(sourceLanguage: Language): String =
+        if (this == sourceLanguage) "$displayName (Original)" else displayName
 }
 
 /** Overall processing / playback state exposed by the ViewModel. */
