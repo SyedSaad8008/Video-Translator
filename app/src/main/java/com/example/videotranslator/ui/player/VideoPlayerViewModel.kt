@@ -20,7 +20,6 @@ import com.example.videotranslator.model.Gender
 import com.example.videotranslator.model.Language
 import com.example.videotranslator.model.ProcessingState
 import com.example.videotranslator.model.TranslationSegment
-import com.example.videotranslator.stt.SourceLanguageDetector
 import com.example.videotranslator.stt.VoskSpeechRecognizer
 import com.example.videotranslator.translation.TranslationManager
 import com.example.videotranslator.tts.TtsManager
@@ -58,7 +57,6 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
     private val voskRecognizer     = VoskSpeechRecognizer(application)
     private val translationManager = TranslationManager()
     private val genderDetector     = GenderDetector()
-    private val langDetector       = SourceLanguageDetector()
     val ttsManager                 = TtsManager(application)
     private val segmentAudioPlayer = SegmentAudioPlayer()
     private val instrumental       = InstrumentalPlayer(viewModelScope)
@@ -293,13 +291,21 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
             _detectedGender.value = globalGenderResult.gender
             DiagnosticLogger.log(TAG, "Global Audio Gender Baseline: ${globalGenderResult.gender} (Median F0 = ${"%.1f".format(globalGenderResult.medianF0)} Hz)")
 
-            // ── 3. Transcribe (Vosk) on Cleaned Audio ─────────────────────
-            _processingState.value = ProcessingState.Loading("Transcribing Hindi speech (High-Precision STT)…", 0.42f)
-            val rawSegments = voskRecognizer.recognise(cleanedMono)
-            DiagnosticLogger.log(TAG, "Vosk recognized ${rawSegments.size} Hindi segments")
+            // ── 3. Acoustic STT Dual-Probe Source Language Detection ───
+            _processingState.value = ProcessingState.Loading("Probing acoustic speech (Hindi vs English vs Telugu)…", 0.38f)
+            val sourceLang = voskRecognizer.probeLanguage(cleanedMono)
+            _detectedSourceLanguage.value = sourceLang
+            _currentLanguage.value = sourceLang
+            applyVolumeForLanguage(sourceLang)
+            DiagnosticLogger.log(TAG, "STAGE 3 - Probed source language: $sourceLang")
+
+            // ── 4. Full Transcribe (Vosk) on Cleaned Audio for Detected Language ──
+            _processingState.value = ProcessingState.Loading("Transcribing speech for $sourceLang (High-Precision STT)…", 0.48f)
+            val rawSegments = voskRecognizer.recognise(cleanedMono, sourceLang)
+            DiagnosticLogger.log(TAG, "Vosk recognized ${rawSegments.size} segments for $sourceLang")
 
             if (rawSegments.isEmpty()) {
-                val msg = "No spoken Hindi speech detected in this video. Please select a video with audible Hindi speech."
+                val msg = "No spoken speech detected in this video. Please select a video with clear spoken speech."
                 DiagnosticLogger.log(TAG, "Pipeline Stopped: $msg")
                 libraryRepo.getRun(runId)?.copy(status = "Error")?.let { libraryRepo.saveRun(it) }
                 refreshLibrary()
@@ -307,8 +313,8 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 return
             }
 
-            // ── 4. Download ML Kit translation & verification models ─────
-            _processingState.value = ProcessingState.Loading("Loading/Downloading neural translation models…", 0.58f)
+            // ── 5. Download ML Kit translation & verification models ─────
+            _processingState.value = ProcessingState.Loading("Loading neural translation models…", 0.62f)
             val modelResult = translationManager.downloadModels()
             if (modelResult.isFailure) {
                 val err = modelResult.exceptionOrNull()?.message ?: "Translation model download failed."
@@ -318,16 +324,6 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 _processingState.value = ProcessingState.Error(err)
                 return
             }
-
-            // ── 5. Auto Source Language Detection ─────────────────────────
-            _processingState.value = ProcessingState.Loading("Detecting source language…", 0.68f)
-            val langDetection = langDetector.detect(rawSegments)
-            val sourceLang = langDetection.detectedLanguage
-            _detectedSourceLanguage.value = sourceLang
-            // Default playback to source language (original)
-            _currentLanguage.value = sourceLang
-            applyVolumeForLanguage(sourceLang)
-            DiagnosticLogger.log(TAG, "Detected source language: $sourceLang")
 
             // ── 6. Contextual Translation & Back-Translation Verification ─
             _processingState.value = ProcessingState.Loading("Translating & verifying (${sourceLang} → other languages)…", 0.72f)

@@ -2,7 +2,9 @@ package com.example.videotranslator.stt
 
 import android.content.Context
 import android.util.Log
+import com.example.videotranslator.model.Language
 import com.example.videotranslator.model.TranslationSegment
+import com.example.videotranslator.util.DiagnosticLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -13,19 +15,24 @@ import java.io.FileOutputStream
 import java.util.zip.ZipInputStream
 
 private const val TAG = "VoskSpeechRecognizer"
-private const val MODEL_ASSET_ZIP = "model-hi-small.zip"
+private const val MODEL_HI_ASSET_ZIP = "model-hi-small.zip"
+private const val MODEL_EN_ASSET_ZIP = "model-en-small.zip"
 
 /**
- * Stage 2 Vosk Speech-to-Text Recognizer.
+ * Stage 2 Dual-Model Vosk Speech-to-Text Recognizer & Language Prober.
  *
- * Key Enhancements:
- *  1. **Detailed Diagnostic Logging**: Logs exact word confidence scores and raw transcripts per segment.
- *  2. **Sample Rate Alignment**: Enforces 16000 Hz sample rate matching the Stage 1 audio output.
- *  3. **Sentence-Level Speech Boundary Extraction**: Groups words into coherent full-sentence units.
+ * Real Acoustic-Confidence Source Language Detection:
+ *  1. Runs a 30-second dual-probe across both Hindi and English Vosk models.
+ *  2. Evaluates average word confidence and recognition density (words/sec).
+ *  3. Decision rules:
+ *     - English model dominates -> ENGLISH
+ *     - Hindi model dominates -> HINDI
+ *     - Both models fail to recognize clean speech (< 0.12 score) -> TELUGU (by elimination)
  */
 class VoskSpeechRecognizer(private val context: Context) {
 
-    private var model: Model? = null
+    private var hiModel: Model? = null
+    private var enModel: Model? = null
 
     private data class WordInfo(
         val word: String,
@@ -35,49 +42,115 @@ class VoskSpeechRecognizer(private val context: Context) {
     )
 
     suspend fun loadModel() = withContext(Dispatchers.IO) {
-        if (model != null) return@withContext
-        val modelDir = File(context.filesDir, "vosk-hi-model")
-        var voskRoot = findVoskRoot(modelDir)
-        if (voskRoot == null || !voskRoot.exists()) {
-            Log.d(TAG, "STAGE 2 - Extracting Vosk model asset…")
-            extractZipFromAssets(MODEL_ASSET_ZIP, modelDir)
-            voskRoot = findVoskRoot(modelDir)
+        if (hiModel != null) return@withContext
+
+        // Load Hindi Vosk Model
+        val hiModelDir = File(context.filesDir, "vosk-hi-model")
+        var hiVoskRoot = findVoskRoot(hiModelDir)
+        if (hiVoskRoot == null || !hiVoskRoot.exists()) {
+            Log.d(TAG, "STAGE 2 - Extracting Hindi Vosk model asset…")
+            extractZipFromAssets(MODEL_HI_ASSET_ZIP, hiModelDir)
+            hiVoskRoot = findVoskRoot(hiModelDir)
         }
-        val root = voskRoot ?: throw IllegalStateException("Vosk model root directory not found")
-        Log.d(TAG, "STAGE 2 - Loading Vosk model from: ${root.absolutePath}")
-        model = Model(root.absolutePath)
-        Log.d(TAG, "STAGE 2 - Vosk model loaded successfully ✓")
+        val rootHi = hiVoskRoot ?: throw IllegalStateException("Hindi Vosk model root directory not found")
+        Log.d(TAG, "STAGE 2 - Loading Hindi Vosk model from: ${rootHi.absolutePath}")
+        hiModel = Model(rootHi.absolutePath)
+        Log.d(TAG, "STAGE 2 - Hindi Vosk model loaded successfully ✓")
+
+        // Load English Vosk Model (if present in assets)
+        try {
+            val enModelDir = File(context.filesDir, "vosk-en-model")
+            var enVoskRoot = findVoskRoot(enModelDir)
+            if (enVoskRoot == null || !enVoskRoot.exists()) {
+                if (context.assets.list("")?.contains(MODEL_EN_ASSET_ZIP) == true) {
+                    Log.d(TAG, "STAGE 2 - Extracting English Vosk model asset…")
+                    extractZipFromAssets(MODEL_EN_ASSET_ZIP, enModelDir)
+                    enVoskRoot = findVoskRoot(enModelDir)
+                }
+            }
+            if (enVoskRoot != null && enVoskRoot.exists()) {
+                Log.d(TAG, "STAGE 2 - Loading English Vosk model from: ${enVoskRoot.absolutePath}")
+                enModel = Model(enVoskRoot.absolutePath)
+                Log.d(TAG, "STAGE 2 - English Vosk model loaded successfully ✓")
+            } else {
+                Log.w(TAG, "English Vosk asset '$MODEL_EN_ASSET_ZIP' not found, running Hindi-only mode.")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to load English Vosk model: ${e.localizedMessage}")
+        }
     }
 
     fun close() {
-        model?.close()
-        model = null
+        hiModel?.close()
+        enModel?.close()
+        hiModel = null
+        enModel = null
     }
 
-    suspend fun recognise(pcm: ShortArray): List<TranslationSegment> = withContext(Dispatchers.IO) {
-        val m = model ?: throw IllegalStateException("Vosk model is not loaded")
+    /**
+     * Probes the first 30 seconds of audio against both Hindi and English models
+     * using acoustic recognition confidence and word density.
+     */
+    suspend fun probeLanguage(pcm: ShortArray): Language = withContext(Dispatchers.IO) {
+        val mHi = hiModel ?: return@withContext Language.HINDI
+        if (pcm.isEmpty()) return@withContext Language.HINDI
+
+        val probeLength = (16_000 * 30).coerceAtMost(pcm.size)
+        val probePcm = pcm.copyOfRange(0, probeLength)
+        val durationSec = probeLength / 16000.0
+
+        // Probe Hindi model
+        val hiWords = runVoskPass(mHi, probePcm)
+        val hiAvgConf = if (hiWords.isNotEmpty()) hiWords.map { it.confidence }.average() else 0.0
+        val hiScore = (hiAvgConf * (hiWords.size / durationSec)).toFloat()
+
+        // Probe English model
+        var enWords = emptyList<WordInfo>()
+        var enAvgConf = 0.0
+        var enScore = 0.0f
+        val mEn = enModel
+        if (mEn != null) {
+            enWords = runVoskPass(mEn, probePcm)
+            enAvgConf = if (enWords.isNotEmpty()) enWords.map { it.confidence }.average() else 0.0
+            enScore = (enAvgConf * (enWords.size / durationSec)).toFloat()
+        }
+
+        DiagnosticLogger.log(TAG,
+            "REAL ACOUSTIC STT DUAL-PROBE RESULTS (Sample: ${"%.1f".format(durationSec)}s):\n" +
+            "   Hindi model probe:   ${hiWords.size} words, avgConf=${"%.2f".format(hiAvgConf)} -> HINDI score=${"%.3f".format(hiScore)}\n" +
+            "   English model probe: ${enWords.size} words, avgConf=${"%.2f".format(enAvgConf)} -> ENGLISH score=${"%.3f".format(enScore)}"
+        )
+
+        val detected = when {
+            // English dominates clearly
+            mEn != null && enScore >= 0.15f && enScore > hiScore * 1.25f -> Language.ENGLISH
+
+            // Hindi dominates clearly
+            hiScore >= 0.15f && hiScore > enScore * 1.25f -> Language.HINDI
+
+            // Both models failed to recognize clean speech -> Telugu by elimination
+            hiScore < 0.12f && enScore < 0.12f -> Language.TELUGU
+
+            // Fallback score comparison
+            mEn != null && enScore > hiScore -> Language.ENGLISH
+            else -> Language.HINDI
+        }
+
+        DiagnosticLogger.log(TAG, "▶ PROBED SOURCE LANGUAGE DETECTED: $detected")
+        detected
+    }
+
+    suspend fun recognise(
+        pcm: ShortArray,
+        sourceLanguage: Language = Language.HINDI
+    ): List<TranslationSegment> = withContext(Dispatchers.IO) {
+        val m = if (sourceLanguage == Language.ENGLISH && enModel != null) enModel!! else (hiModel ?: throw IllegalStateException("Vosk model is not loaded"))
         if (pcm.isEmpty()) return@withContext emptyList()
 
         val sampleRate = 16_000f
-        val chunkSize = 4096
-        val rec = Recognizer(m, sampleRate)
-        rec.setWords(true)
+        Log.d(TAG, "STAGE 2 - Starting full Vosk recognition with model for $sourceLanguage: sampleRate=$sampleRate, pcmSamples=${pcm.size} (${"%.2f".format(pcm.size / 16000.0)}s)")
 
-        Log.d(TAG, "STAGE 2 - Starting Vosk recognition: sampleRate=$sampleRate, pcmSamples=${pcm.size} (${"%.2f".format(pcm.size / 16000.0)}s)")
-
-        val allWords = mutableListOf<WordInfo>()
-        var chunkStart = 0
-
-        while (chunkStart < pcm.size) {
-            val chunkEnd = (chunkStart + chunkSize).coerceAtMost(pcm.size)
-            val chunk = pcm.copyOfRange(chunkStart, chunkEnd)
-            if (rec.acceptWaveForm(chunk, chunk.size)) {
-                allWords.addAll(extractWordsFromResult(rec.result))
-            }
-            chunkStart = chunkEnd
-        }
-        allWords.addAll(extractWordsFromResult(rec.finalResult))
-        rec.close()
+        val allWords = runVoskPass(m, pcm)
 
         val avgConf = if (allWords.isNotEmpty()) allWords.map { it.confidence }.average() else 0.0
         Log.d(TAG, "STAGE 2 - Recognition total: ${allWords.size} words recognized, avgConfidence=${"%.2f".format(avgConf)}")
@@ -91,6 +164,28 @@ class VoskSpeechRecognizer(private val context: Context) {
         }
 
         segments
+    }
+
+    private fun runVoskPass(m: Model, pcm: ShortArray): List<WordInfo> {
+        val sampleRate = 16_000f
+        val chunkSize = 4096
+        val rec = Recognizer(m, sampleRate)
+        rec.setWords(true)
+
+        val words = mutableListOf<WordInfo>()
+        var chunkStart = 0
+
+        while (chunkStart < pcm.size) {
+            val chunkEnd = (chunkStart + chunkSize).coerceAtMost(pcm.size)
+            val chunk = pcm.copyOfRange(chunkStart, chunkEnd)
+            if (rec.acceptWaveForm(chunk, chunk.size)) {
+                words.addAll(extractWordsFromResult(rec.result))
+            }
+            chunkStart = chunkEnd
+        }
+        words.addAll(extractWordsFromResult(rec.finalResult))
+        rec.close()
+        return words
     }
 
     private fun extractWordsFromResult(json: String): List<WordInfo> {
@@ -159,8 +254,8 @@ class VoskSpeechRecognizer(private val context: Context) {
 
     private fun createSegmentFromWords(words: List<WordInfo>): TranslationSegment? {
         if (words.isEmpty()) return null
-        val hindiText = words.joinToString(" ") { it.word }.trim()
-        if (hindiText.isBlank()) return null
+        val text = words.joinToString(" ") { it.word }.trim()
+        if (text.isBlank()) return null
 
         val startMs = words.first().startMs
         val endMs = words.last().endMs.coerceAtLeast(startMs + 600L)
@@ -168,7 +263,7 @@ class VoskSpeechRecognizer(private val context: Context) {
         return TranslationSegment(
             startMs = startMs,
             endMs = endMs,
-            hindi = hindiText
+            hindi = text
         )
     }
 
