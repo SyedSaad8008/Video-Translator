@@ -21,18 +21,42 @@ private const val MODEL_EN_ASSET_ZIP = "model-en-small.zip"
 /**
  * Stage 2 Dual-Model Vosk Speech-to-Text Recognizer & Language Prober.
  *
- * Real Acoustic-Confidence Source Language Detection:
+ * Real Acoustic-Confidence & Vocabulary-Validation Source Language Detection:
  *  1. Runs a 30-second dual-probe across both Hindi and English Vosk models.
- *  2. Evaluates average word confidence and recognition density (words/sec).
- *  3. Decision rules:
- *     - English model dominates -> ENGLISH
- *     - Hindi model dominates -> HINDI
- *     - Both models fail to recognize clean speech (< 0.12 score) -> TELUGU (by elimination)
+ *  2. Validates recognized words against authentic English and Hindi dictionary vocabularies.
+ *  3. Computes authentic scores: `score = selfReportedConfidence * dictionaryValidityRatio`.
+ *  4. Decision rules:
+ *     - English authentic & vocabulary valid (ratio >= 35%) -> ENGLISH
+ *     - Hindi authentic & vocabulary valid (ratio >= 35%) -> HINDI
+ *     - Both models fail vocabulary check (< 30% dictionary words) -> TELUGU (by elimination)
  */
 class VoskSpeechRecognizer(private val context: Context) {
 
     private var hiModel: Model? = null
     private var enModel: Model? = null
+
+    // High-frequency authentic English dictionary vocabulary
+    private val englishVocabulary = setOf(
+        "the", "be", "to", "of", "and", "a", "in", "that", "have", "i", "it", "for", "not", "on", "with", "he",
+        "as", "you", "do", "at", "this", "but", "his", "by", "from", "they", "we", "say", "her", "she", "or",
+        "an", "will", "my", "one", "all", "would", "there", "their", "what", "so", "up", "out", "if", "about",
+        "who", "get", "which", "go", "me", "when", "make", "can", "like", "time", "no", "just", "him", "know",
+        "take", "people", "into", "year", "your", "good", "some", "could", "them", "see", "other", "than",
+        "then", "now", "look", "only", "come", "its", "over", "think", "also", "back", "after", "use", "two",
+        "how", "our", "work", "first", "well", "way", "even", "new", "want", "because", "any", "these", "give",
+        "day", "most", "us", "hello", "today", "video", "speaking", "thank", "world", "going", "should", "place",
+        "something", "always", "together", "children", "important", "example", "different", "country", "family"
+    )
+
+    // High-frequency authentic Hindi Devanagari vocabulary
+    private val hindiVocabulary = setOf(
+        "है", "हैं", "था", "थी", "थे", "होगा", "होगी", "मैं", "तुम", "आप", "वह", "यह", "हम", "वे", "और", "या",
+        "की", "के", "का", "में", "से", "को", "नहीं", "हाँ", "ठीक", "अच्छा", "बहुत", "थोड़ा", "जाना", "आना",
+        "करना", "देखना", "बोलना", "खाना", "नमस्ते", "शुक्रिया", "धन्यवाद", "कहा", "रहा", "रही", "रहे", "बात",
+        "लोग", "समय", "काम", "दिन", "साल", "घर", "देश", "नाम", "तरह", "बाद", "पहले", "साथ", "पास", "लिए",
+        "फिर", "लेकिन", "भी", "ही", "तो", "न", "तक", "पर", "सब", "कोई", "कुछ", "अपना", "अपनी", "अपने",
+        "क्या", "कैसे", "कब", "कहाँ", "क्यों", "कौन", "जैसे", "वैसे", "जब", "तब", "जहाँ", "वहाँ", "अगर"
+    )
 
     private data class WordInfo(
         val word: String,
@@ -89,7 +113,7 @@ class VoskSpeechRecognizer(private val context: Context) {
 
     /**
      * Probes the first 30 seconds of audio against both Hindi and English models
-     * using acoustic recognition confidence and word density.
+     * using acoustic confidence combined with vocabulary dictionary validation.
      */
     suspend fun probeLanguage(pcm: ShortArray): Language = withContext(Dispatchers.IO) {
         val mHi = hiModel ?: return@withContext Language.HINDI
@@ -99,44 +123,62 @@ class VoskSpeechRecognizer(private val context: Context) {
         val probePcm = pcm.copyOfRange(0, probeLength)
         val durationSec = probeLength / 16000.0
 
-        // Probe Hindi model
+        // 1. Probe Hindi model
         val hiWords = runVoskPass(mHi, probePcm)
         val hiAvgConf = if (hiWords.isNotEmpty()) hiWords.map { it.confidence }.average() else 0.0
         val hiScore = (hiAvgConf * (hiWords.size / durationSec)).toFloat()
 
-        // Probe English model
+        val hiValidCount = hiWords.count { wordInfo ->
+            val norm = wordInfo.word.trim().lowercase().replace(Regex("[!?,.–—-]"), "")
+            hindiVocabulary.contains(norm)
+        }
+        val hiValidityRatio = if (hiWords.isNotEmpty()) hiValidCount.toFloat() / hiWords.size else 0f
+        val hiAuthenticScore = hiScore * hiValidityRatio
+
+        // 2. Probe English model
         var enWords = emptyList<WordInfo>()
         var enAvgConf = 0.0
         var enScore = 0.0f
+        var enValidCount = 0
+        var enValidityRatio = 0f
+        var enAuthenticScore = 0.0f
         val mEn = enModel
         if (mEn != null) {
             enWords = runVoskPass(mEn, probePcm)
             enAvgConf = if (enWords.isNotEmpty()) enWords.map { it.confidence }.average() else 0.0
             enScore = (enAvgConf * (enWords.size / durationSec)).toFloat()
+
+            enValidCount = enWords.count { wordInfo ->
+                val norm = wordInfo.word.trim().lowercase().replace(Regex("[!?,.–—-]"), "")
+                englishVocabulary.contains(norm) || (norm.length >= 4 && norm.all { c -> c in 'a'..'z' })
+            }
+            enValidityRatio = if (enWords.isNotEmpty()) enValidCount.toFloat() / enWords.size else 0f
+            enAuthenticScore = enScore * enValidityRatio
         }
 
         DiagnosticLogger.log(TAG,
-            "REAL ACOUSTIC STT DUAL-PROBE RESULTS (Sample: ${"%.1f".format(durationSec)}s):\n" +
-            "   Hindi model probe:   ${hiWords.size} words, avgConf=${"%.2f".format(hiAvgConf)} -> HINDI score=${"%.3f".format(hiScore)}\n" +
-            "   English model probe: ${enWords.size} words, avgConf=${"%.2f".format(enAvgConf)} -> ENGLISH score=${"%.3f".format(enScore)}"
+            "REAL ACOUSTIC STT DUAL-PROBE & VOCABULARY VALIDATION (Sample: ${"%.1f".format(durationSec)}s):\n" +
+            "   Hindi model probe:   ${hiWords.size} words (${hiValidCount} valid dict, ${"%.1f".format(hiValidityRatio*100)}%), avgConf=${"%.2f".format(hiAvgConf)} -> HINDI authenticScore=${"%.3f".format(hiAuthenticScore)}\n" +
+            "   English model probe: ${enWords.size} words (${enValidCount} valid dict, ${"%.1f".format(enValidityRatio*100)}%), avgConf=${"%.2f".format(enAvgConf)} -> ENGLISH authenticScore=${"%.3f".format(enAuthenticScore)}"
         )
 
         val detected = when {
-            // English dominates clearly
-            mEn != null && enScore >= 0.15f && enScore > hiScore * 1.25f -> Language.ENGLISH
+            // English is authentic & valid
+            mEn != null && enAuthenticScore >= 0.08f && enValidityRatio >= 0.35f && enAuthenticScore > hiAuthenticScore * 1.2f -> Language.ENGLISH
 
-            // Hindi dominates clearly
-            hiScore >= 0.15f && hiScore > enScore * 1.25f -> Language.HINDI
+            // Hindi is authentic & valid
+            hiAuthenticScore >= 0.08f && hiValidityRatio >= 0.35f && hiAuthenticScore > enAuthenticScore * 1.2f -> Language.HINDI
 
-            // Both models failed to recognize clean speech -> Telugu by elimination
-            hiScore < 0.12f && enScore < 0.12f -> Language.TELUGU
+            // Both models failed vocabulary validity check (< 30% real dictionary words) -> TELUGU by elimination
+            enValidityRatio < 0.30f && hiValidityRatio < 0.30f -> Language.TELUGU
 
-            // Fallback score comparison
-            mEn != null && enScore > hiScore -> Language.ENGLISH
-            else -> Language.HINDI
+            // Fallback comparison based on authentic score
+            mEn != null && enAuthenticScore > hiAuthenticScore && enValidityRatio >= 0.30f -> Language.ENGLISH
+            hiAuthenticScore > enAuthenticScore && hiValidityRatio >= 0.30f -> Language.HINDI
+            else -> Language.TELUGU
         }
 
-        DiagnosticLogger.log(TAG, "▶ PROBED SOURCE LANGUAGE DETECTED: $detected")
+        DiagnosticLogger.log(TAG, "▶ PROBED SOURCE LANGUAGE DETECTED: $detected (Validities: EN=${"%.0f".format(enValidityRatio*100)}%, HI=${"%.0f".format(hiValidityRatio*100)}%)")
         detected
     }
 
