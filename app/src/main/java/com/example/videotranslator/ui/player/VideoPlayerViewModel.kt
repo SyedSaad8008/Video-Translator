@@ -21,6 +21,7 @@ import com.example.videotranslator.model.Language
 import com.example.videotranslator.model.ProcessingState
 import com.example.videotranslator.model.TranslationSegment
 import com.example.videotranslator.stt.VoskSpeechRecognizer
+import com.example.videotranslator.stt.WhisperSpeechRecognizer
 import com.example.videotranslator.translation.TranslationManager
 import com.example.videotranslator.tts.TtsManager
 import com.example.videotranslator.tts.VoiceAvailabilityStatus
@@ -57,6 +58,7 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
     private val audioExtractor     = AudioExtractor(application)
     private val noiseSuppressor    = NoiseSuppressor()
     private val voskRecognizer     = VoskSpeechRecognizer(application)
+    private val whisperRecognizer  = WhisperSpeechRecognizer(application)
     private val translationManager = TranslationManager()
     private val genderDetector     = GenderDetector()
     val ttsManager                 = TtsManager(application)
@@ -138,15 +140,17 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
             }
         })
 
-        // Pre-warm Vosk model & check ML Kit on app start asynchronously
+        // Pre-warm Vosk & Whisper models & check ML Kit on app start asynchronously
         prewarmJob = viewModelScope.launch {
             try {
-                val voskLoad  = launch { voskRecognizer.loadModel() }
-                val mlKitLoad = launch {
+                val voskLoad    = launch { voskRecognizer.loadModel() }
+                val whisperLoad = launch { whisperRecognizer.loadModel() }
+                val mlKitLoad   = launch {
                     try { translationManager.downloadModels() }
                     catch (e: Exception) { Log.w(TAG, "ML Kit prewarm failed: ${e.message}") }
                 }
                 voskLoad.join()
+                whisperLoad.join()
                 mlKitLoad.join()
                 DiagnosticLogger.log(TAG, "Pre-warm complete ✓")
             } catch (e: CancellationException) { throw e }
@@ -294,13 +298,18 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
             _detectedGender.value = globalGenderResult.gender
             DiagnosticLogger.log(TAG, "Global Audio Gender Baseline: ${globalGenderResult.gender} (Median F0 = ${"%.1f".format(globalGenderResult.medianF0)} Hz)")
 
-            // ── 3. Acoustic STT Dual-Probe Source Language Detection ───
+            // ── 3. Acoustic STT Dual-Probe & Whisper Native Language Detection ───
             _processingState.value = ProcessingState.Loading("Probing acoustic speech (Hindi vs English vs Telugu)…", 0.38f)
-            val sourceLang = voskRecognizer.probeLanguage(cleanedMono)
+            val whisperResult = whisperRecognizer.detectLanguageNative(cleanedMono)
+            val sourceLang = if (whisperResult.confidence >= 0.70f && whisperResult.language == Language.TELUGU) {
+                Language.TELUGU
+            } else {
+                voskRecognizer.probeLanguage(cleanedMono)
+            }
             _detectedSourceLanguage.value = sourceLang
             _currentLanguage.value = sourceLang
             applyVolumeForLanguage(sourceLang)
-            DiagnosticLogger.log(TAG, "STAGE 3 - Probed source language: $sourceLang")
+            DiagnosticLogger.log(TAG, "STAGE 3 - Probed source language: $sourceLang (Whisper Native: ${whisperResult.language}, conf=${"%.2f".format(whisperResult.confidence)})")
 
             // ── 4. Full Transcribe (Vosk) on Cleaned Audio for Detected Language ──
             _processingState.value = ProcessingState.Loading("Transcribing speech for $sourceLang (High-Precision STT)…", 0.48f)

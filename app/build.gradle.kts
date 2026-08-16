@@ -111,4 +111,7 @@ dependencies {
 
   // JSON serialisation (cache file)
   implementation(libs.kotlinx.serialization.json)
+
+  // ONNX Runtime Android for Whisper Telugu STT
+  implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.0")
 }
