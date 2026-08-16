@@ -129,7 +129,7 @@ class VoskSpeechRecognizer(private val context: Context) {
         val hiScore = (hiAvgConf * (hiWords.size / durationSec)).toFloat()
 
         val hiValidCount = hiWords.count { wordInfo ->
-            val norm = wordInfo.word.trim().lowercase().replace(Regex("[!?,.–—-]"), "")
+            val norm = wordInfo.word.trim().lowercase().replace(Regex("[!?,.–—\\-]"), "")
             hindiVocabulary.contains(norm)
         }
         val hiValidityRatio = if (hiWords.isNotEmpty()) hiValidCount.toFloat() / hiWords.size else 0f
@@ -149,7 +149,7 @@ class VoskSpeechRecognizer(private val context: Context) {
             enScore = (enAvgConf * (enWords.size / durationSec)).toFloat()
 
             enValidCount = enWords.count { wordInfo ->
-                val norm = wordInfo.word.trim().lowercase().replace(Regex("[!?,.–—-]"), "")
+                val norm = wordInfo.word.trim().lowercase().replace(Regex("[!?,.–—\\-]"), "")
                 englishVocabulary.contains(norm) || (norm.length >= 4 && norm.all { c -> c in 'a'..'z' })
             }
             enValidityRatio = if (enWords.isNotEmpty()) enValidCount.toFloat() / enWords.size else 0f

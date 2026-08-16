@@ -56,7 +56,7 @@ class DisfluencyCleaner {
 
         // 1. Check if the segment is a standalone expressive interjection
         val words = trimmed.split("\\s+".toRegex()).filter { it.isNotBlank() }
-        val cleanPunctuation = trimmed.replace(Regex("[!?,.–—-]"), "").lowercase().trim()
+        val cleanPunctuation = trimmed.replace(Regex("[!?,.–—\\-]"), "").lowercase().trim()
 
         if (words.size <= 2 && expressiveInterjections.any { cleanPunctuation.contains(it) }) {
             interjectionsFound.add(trimmed)
@@ -72,7 +72,7 @@ class DisfluencyCleaner {
         var processing = trimmed
 
         // 2. Resolve false starts / self-corrections (Hindi: "X— मेरा मतलब Y", English: "X— I mean Y")
-        val falseStartRegex = Regex("(?<fragment>[\\p{L}\\s]{2,20})[—–-]\\s*(?:मेरा मतलब|यानी|कि|i mean|you know)\\s+(?<correction>[\\p{L}\\s]+)", RegexOption.IGNORE_CASE)
+        val falseStartRegex = Regex("(?<fragment>[\\p{L}\\s]{2,20})[—–\\-]\\s*(?:मेरा मतलब|यानी|कि|i mean|you know)\\s+(?<correction>[\\p{L}\\s]+)", RegexOption.IGNORE_CASE)
         if (falseStartRegex.containsMatchIn(processing)) {
             falseStartRegex.findAll(processing).forEach { match ->
                 disfluenciesFound.add("False start fragment: '${match.value}'")
@@ -98,11 +98,11 @@ class DisfluencyCleaner {
         var i = 0
         while (i < wordTokens.size) {
             val currentWord = wordTokens[i]
-            val normalizedCurrent = currentWord.replace(Regex("[!?,.–—-]"), "").lowercase()
+            val normalizedCurrent = currentWord.replace(Regex("[!?,.–—\\-]"), "").lowercase()
 
             if (cleanedTokens.isNotEmpty()) {
                 val previousWord = cleanedTokens.last()
-                val normalizedPrev = previousWord.replace(Regex("[!?,.–—-]"), "").lowercase()
+                val normalizedPrev = previousWord.replace(Regex("[!?,.–—\\-]"), "").lowercase()
 
                 // Stutter detection: same word repeated sequentially (and not an expressive interjection like "yeah yeah")
                 if (normalizedCurrent.equals(normalizedPrev, ignoreCase = true) &&
@@ -119,7 +119,7 @@ class DisfluencyCleaner {
 
         val cleanedFinal = cleanedTokens.joinToString(" ")
             .replace(Regex("\\s+"), " ")
-            .replace(Regex("^[!?,.–—-\\s]+"), "")
+            .replace(Regex("^[!?,.–—\\-\\s]+"), "")
             .replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
             .trim()
 
