@@ -1,10 +1,14 @@
 package com.example.videotranslator.audio
 
+import android.util.Log
 import com.example.videotranslator.model.Gender
 import com.example.videotranslator.util.DiagnosticLogger
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
@@ -58,7 +62,7 @@ class GenderDetector {
 
     // ── Public API: per-segment detection ────────────────────────────────────
 
-    fun detectGender(
+    suspend fun detectGender(
         pcmMono: ShortArray,
         fallbackGender: Gender = Gender.MALE,
         fullPcmMono: ShortArray? = null,
@@ -66,7 +70,7 @@ class GenderDetector {
         segmentEndMs: Long = 0L,
         previousSegmentEndMs: Long = 0L,
         transientMask: BooleanArray? = null
-    ): DetectionResult {
+    ): DetectionResult = withContext(Dispatchers.Default) {
 
         val pauseMs = max(0L, segmentStartMs - previousSegmentEndMs)
 
@@ -83,7 +87,7 @@ class GenderDetector {
                     "HNR=${"%.1f".format(pass1.hnr)}dB, " +
                     "EnsConf=${"%.2f".format(pass1.ensembleConfidence)}, " +
                     "Voiced=${pass1.totalVoicedFrames}, Gender=${pass1.gender}")
-            return pass1
+            return@withContext pass1
         }
 
         // Pass 2: Expand window (clamped to avoid preceding pause)
@@ -113,13 +117,13 @@ class GenderDetector {
                 "SC=${"%.0f".format(final.spectralCentroid)}Hz(${final.scVote}), " +
                 "HNR=${"%.1f".format(final.hnr)}dB, " +
                 "EnsConf=${"%.2f".format(final.ensembleConfidence)}, Gender=${final.gender}")
-        return final
+        return@withContext final
     }
 
     // ── Temporal consistency smoothing (called on the full sequence) ─────────
 
-    fun smoothSequence(results: List<DetectionResult>): List<DetectionResult> {
-        if (results.size < 3) return results
+    suspend fun smoothSequence(results: List<DetectionResult>): List<DetectionResult> = withContext(Dispatchers.Default) {
+        if (results.size < 3) return@withContext results
 
         val smoothed = results.toMutableList()
         var corrections = 0
@@ -157,7 +161,7 @@ class GenderDetector {
             DiagnosticLogger.log(TAG, "Temporal smoothing: no corrections needed (all segments consistent)")
         }
 
-        return smoothed
+        return@withContext smoothed
     }
 
     // ── Core multi-signal analysis ───────────────────────────────────────────

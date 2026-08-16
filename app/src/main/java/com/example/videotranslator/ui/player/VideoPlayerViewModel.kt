@@ -26,6 +26,7 @@ import com.example.videotranslator.tts.TtsManager
 import com.example.videotranslator.tts.VoiceAvailabilityStatus
 import com.example.videotranslator.util.DiagnosticLogger
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -33,6 +34,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
 import java.util.UUID
@@ -117,9 +119,10 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
         exoPlayer.repeatMode = Player.REPEAT_MODE_OFF
         exoPlayer.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
-                if (isPlaying && _currentLanguage.value != Language.HINDI) {
-                    instrumental.play(exoPlayer.currentPosition)
+                if (isPlaying) {
+                    segmentAudioPlayer.resume()
                 } else {
+                    segmentAudioPlayer.pause()
                     instrumental.pause()
                 }
             }
@@ -129,9 +132,9 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 newPosition: Player.PositionInfo,
                 reason: Int
             ) {
-                instrumental.seekTo(newPosition.positionMs)
                 lastSpokenIndex = -1
                 segmentAudioPlayer.stop()
+                instrumental.seekTo(newPosition.positionMs)
             }
         })
 
@@ -252,7 +255,7 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     // ── Pipeline Execution ────────────────────────────────────────────────────
-    private suspend fun runPipeline(uri: Uri, runId: String) {
+    private suspend fun runPipeline(uri: Uri, runId: String) = withContext(Dispatchers.Default) {
         val pipelineStart = System.currentTimeMillis()
         DiagnosticLogger.log(TAG, "Starting full pipeline execution for run [$runId]: $uri")
         try {
@@ -310,7 +313,7 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 libraryRepo.getRun(runId)?.copy(status = "Error")?.let { libraryRepo.saveRun(it) }
                 refreshLibrary()
                 _processingState.value = ProcessingState.Error(msg)
-                return
+                return@withContext
             }
 
             // ── 5. Download ML Kit translation & verification models ─────
@@ -322,7 +325,7 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 libraryRepo.getRun(runId)?.copy(status = "Error")?.let { libraryRepo.saveRun(it) }
                 refreshLibrary()
                 _processingState.value = ProcessingState.Error(err)
-                return
+                return@withContext
             }
 
             // ── 6. Contextual Translation & Back-Translation Verification ─

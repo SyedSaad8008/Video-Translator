@@ -9,6 +9,9 @@ import kotlin.math.min
 import kotlin.math.sin
 import kotlin.math.sqrt
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
 private const val TAG = "NoiseSuppressor"
 private const val FFT_SIZE = 512       // 32ms window at 16kHz (bin width = 31.25 Hz)
 private const val HOP_SIZE = 256       // 50% overlap (16ms hop)
@@ -34,19 +37,19 @@ class NoiseSuppressor {
         val totalTransientFrames: Int
     )
 
-    fun suppressNoise(pcmMono: ShortArray): ShortArray {
-        return suppressNoiseWithResult(pcmMono).cleanedPcm
+    suspend fun suppressNoise(pcmMono: ShortArray): ShortArray = withContext(Dispatchers.Default) {
+        suppressNoiseWithResult(pcmMono).cleanedPcm
     }
 
-    fun suppressNoiseWithResult(pcmMono: ShortArray): NoiseReductionResult {
+    suspend fun suppressNoiseWithResult(pcmMono: ShortArray): NoiseReductionResult = withContext(Dispatchers.Default) {
         if (pcmMono.size < FFT_SIZE) {
-            return NoiseReductionResult(pcmMono.clone(), BooleanArray(0), 0)
+            return@withContext NoiseReductionResult(pcmMono.clone(), BooleanArray(0), 0)
         }
 
         val startTime = System.currentTimeMillis()
         val numFrames = (pcmMono.size - FFT_SIZE) / HOP_SIZE + 1
         if (numFrames <= 0) {
-            return NoiseReductionResult(pcmMono.clone(), BooleanArray(0), 0)
+            return@withContext NoiseReductionResult(pcmMono.clone(), BooleanArray(0), 0)
         }
 
         // Precompute Hanning window
@@ -186,7 +189,7 @@ class NoiseSuppressor {
                 "   • Wind/Air HPF Filter: Subtracted frequencies < ${WIND_HPF_CUTOFF_HZ}Hz (bin 0..$hpfBinCutoff)\n" +
                 "   • Horn Transient Detector: Flagged & attenuated $totalTransients transient frames")
 
-        return NoiseReductionResult(cleanedPcm, transientMask, totalTransients)
+        return@withContext NoiseReductionResult(cleanedPcm, transientMask, totalTransients)
     }
 
     private fun fft(real: DoubleArray, imag: DoubleArray) {
