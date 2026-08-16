@@ -187,7 +187,7 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
         exoPlayer.setMediaItem(MediaItem.fromUri(uri))
         exoPlayer.prepare()
-        applyVolumeForLanguage(_currentLanguage.value)
+        viewModelScope.launch(Dispatchers.Main) { applyVolumeForLanguage(_currentLanguage.value) }
 
         pipelineJob = viewModelScope.launch { runPipeline(uri, newRunId) }
     }
@@ -207,7 +207,7 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
         exoPlayer.setMediaItem(MediaItem.fromUri(uri))
         exoPlayer.prepare()
-        applyVolumeForLanguage(_currentLanguage.value)
+        viewModelScope.launch(Dispatchers.Main) { applyVolumeForLanguage(_currentLanguage.value) }
 
         viewModelScope.launch {
             val cachedSegs = cache.loadRun(run.runId)
@@ -474,8 +474,8 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
         viewModelScope.launch {
             ttsManager.selectVoiceForGender(language, _detectedGender.value)
             recheckVoiceAvailability()
+            applyVolumeForLanguage(language)
         }
-        applyVolumeForLanguage(language)
         lastSpokenIndex = -1
         if (_processingState.value == ProcessingState.Ready) startTtsPolling()
     }
@@ -486,7 +486,7 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
         _missingVoiceWarning.value = !status.hasGenderMatchedVoices
     }
 
-    private fun applyVolumeForLanguage(lang: Language) {
+    private suspend fun applyVolumeForLanguage(lang: Language) = withContext(Dispatchers.Main) {
         val src = _detectedSourceLanguage.value
         if (lang == src) {
             // Playing original audio — full video, mute TTS overlay
@@ -502,7 +502,7 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
     // ── Real-Time Segment Audio Polling Engine ────────────────────────────────
     private fun startTtsPolling() {
         ttsPollingJob?.cancel()
-        ttsPollingJob = viewModelScope.launch {
+        ttsPollingJob = viewModelScope.launch(Dispatchers.Main) {
             while (isActive) {
                 val currentLang = _currentLanguage.value
                 val srcLang     = _detectedSourceLanguage.value
