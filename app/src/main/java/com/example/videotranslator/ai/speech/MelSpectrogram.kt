@@ -8,11 +8,12 @@ import kotlin.math.sin
 
 /**
  * 80-Channel Log-Mel Filterbank Feature Extractor for Whisper Multilingual STT.
- * Compliant with OpenAI Whisper audio pre-processing specification.
+ * Compliant with OpenAI Whisper audio pre-processing specification (400 window, 512 FFT, 160 hop).
  */
 class MelSpectrogram(
     private val sampleRate: Int = 16_000,
     private val nFft: Int = 400,
+    private val fftSize: Int = 512, // Power-of-two padded FFT
     private val hopLength: Int = 160,
     private val nMels: Int = 80
 ) {
@@ -21,6 +22,7 @@ class MelSpectrogram(
         (0.5 * (1.0 - cos(2.0 * PI * i / nFft))).toFloat()
     }
 
+    private val numBins: Int = fftSize / 2 + 1
     private val melFilters: Array<FloatArray> = createMelFilterbank()
 
     fun extract(pcm: ShortArray): Array<FloatArray> {
@@ -30,23 +32,28 @@ class MelSpectrogram(
         val numFrames = max(1, (floatSamples.size - nFft) / hopLength + 1)
         val melFrames = Array(numFrames) { FloatArray(nMels) }
 
-        val real = FloatArray(nFft)
-        val imag = FloatArray(nFft)
-        val power = FloatArray(nFft / 2 + 1)
+        val real = FloatArray(fftSize)
+        val imag = FloatArray(fftSize)
+        val power = FloatArray(numBins)
 
         for (frame in 0 until numFrames) {
             val start = frame * hopLength
-            for (i in 0 until nFft) {
-                val sampleIdx = start + i
-                real[i] = if (sampleIdx < floatSamples.size) floatSamples[sampleIdx] * window[i] else 0f
+            // Apply window and zero-pad to fftSize (512)
+            for (i in 0 until fftSize) {
+                if (i < nFft) {
+                    val sampleIdx = start + i
+                    real[i] = if (sampleIdx < floatSamples.size) floatSamples[sampleIdx] * window[i] else 0f
+                } else {
+                    real[i] = 0f
+                }
                 imag[i] = 0f
             }
 
-            // In-place FFT
+            // In-place 512-point FFT
             fft(real, imag)
 
             // Power spectrum
-            for (i in 0..nFft / 2) {
+            for (i in 0 until numBins) {
                 power[i] = real[i] * real[i] + imag[i] * imag[i]
             }
 
@@ -54,7 +61,7 @@ class MelSpectrogram(
             for (m in 0 until nMels) {
                 var melEnergy = 0f
                 val filter = melFilters[m]
-                for (k in 0..nFft / 2) {
+                for (k in 0 until numBins) {
                     melEnergy += power[k] * filter[k]
                 }
                 melFrames[frame][m] = (ln(max(1e-5f, melEnergy)) / ln(10.0f)).toFloat()
@@ -65,7 +72,6 @@ class MelSpectrogram(
     }
 
     private fun createMelFilterbank(): Array<FloatArray> {
-        val numBins = nFft / 2 + 1
         val filters = Array(nMels) { FloatArray(numBins) }
 
         val minMel = hzToMel(0f)
@@ -75,7 +81,7 @@ class MelSpectrogram(
             minMel + i * (maxMel - minMel) / (nMels + 1)
         }
         val binPoints = IntArray(nMels + 2) { i ->
-            ((nFft + 1) * melToHz(melPoints[i]) / sampleRate).toInt().coerceIn(0, numBins - 1)
+            ((fftSize + 1) * melToHz(melPoints[i]) / sampleRate).toInt().coerceIn(0, numBins - 1)
         }
 
         for (m in 1..nMels) {
