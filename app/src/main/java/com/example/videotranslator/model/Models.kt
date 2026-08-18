@@ -1,5 +1,6 @@
 package com.example.videotranslator.model
 
+import com.google.mlkit.nl.translate.TranslateLanguage
 import kotlinx.serialization.Serializable
 
 /** Speaker gender classification. */
@@ -56,16 +57,12 @@ data class TranslationSegment(
     val hindi: String = "",
     val english: String = "",
     val telugu: String = "",
-    val voiceGender: String = "male",
-    val gender: Gender = Gender.MALE,
-    val genderConfidence: Float = 1.0f,
-    val audioPath: String = "",
-    val englishAudioPath: String = "",
-    val englishSpeedRatio: Float = 1.0f,
-    val teluguAudioPath: String = "",
-    val teluguSpeedRatio: Float = 1.0f,
-    val hindiAudioPath: String = "",
-    val hindiSpeedRatio: Float = 1.0f,
+    val voiceGender: Gender = Gender.MALE,
+    val genderConfidence: Double = 1.0,
+    val audioFilePath: String = "",
+    val targetDurationMs: Long = 0L,
+    val actualDurationMs: Long = 0L,
+    val speedRatio: Float = 1.0f,
     val detectedSourceLanguage: String = "HINDI"
 ) {
     val startTimeSec: Double get() = startMs / 1000.0
@@ -79,11 +76,12 @@ data class TranslationSegment(
 enum class Language(
     val displayName: String,
     val locale: String,
-    val nllbCode: String
+    val nllbCode: String,
+    val mlKitCode: String
 ) {
-    HINDI("हिंदी", "hi-IN", "hin_Deva"),
-    ENGLISH("English", "en-US", "eng_Latn"),
-    TELUGU("తెలుగు", "te-IN", "tel_Telu");
+    HINDI("हिंदी", "hi-IN", "hin_Deva", TranslateLanguage.HINDI),
+    ENGLISH("English", "en-US", "eng_Latn", TranslateLanguage.ENGLISH),
+    TELUGU("తెలుగు", "te-IN", "tel_Telu", TranslateLanguage.TELUGU);
 
     fun displayNameWithOriginalTag(sourceLanguage: Language): String =
         if (this == sourceLanguage) "$displayName (Original)" else displayName

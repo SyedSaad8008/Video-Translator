@@ -40,11 +40,6 @@ android {
       resources {
         excludes += "/META-INF/{AL2.0,LGPL2.1}"
         excludes += "META-INF/DEPENDENCIES"
-        // Vosk ships native libs; pick the first occurrence when merging
-        pickFirsts += "lib/x86/libjni.so"
-        pickFirsts += "lib/x86_64/libjni.so"
-        pickFirsts += "lib/armeabi-v7a/libjni.so"
-        pickFirsts += "lib/arm64-v8a/libjni.so"
       }
     }
 }
@@ -100,11 +95,8 @@ dependencies {
   implementation(libs.media3.ui.compose)
   implementation(libs.media3.session)
 
-  // ML Kit Translation (on-device, Hindi → English / Telugu)
+  // ML Kit On-Device Translation
   implementation(libs.mlkit.translate)
-
-  // Vosk offline STT (Hindi)
-  implementation(libs.vosk.android)
 
   // Kotlin coroutines bridge for ML Kit Tasks
   implementation(libs.kotlinx.coroutines.play.services)
@@ -112,6 +104,6 @@ dependencies {
   // JSON serialisation (cache file)
   implementation(libs.kotlinx.serialization.json)
 
-  // ONNX Runtime Android for Whisper Telugu STT
+  // ONNX Runtime Mobile for on-device Neural STT (Whisper) & NLLB-200 / Piper TTS
   implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.0")
 }
