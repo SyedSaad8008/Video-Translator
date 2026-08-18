@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
@@ -31,6 +32,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
+import com.example.videotranslator.ui.benchmark.TranslationBenchmarkSheet
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -100,9 +102,10 @@ fun VideoPlayerScreen(
     val manualSourceLang   by viewModel.manualSourceLanguage.collectAsStateWithLifecycle()
     val installProgress    by viewModel.installProgress.collectAsStateWithLifecycle()
 
-    var showLogSheet      by remember { mutableStateOf(false) }
-    var showLibrarySheet  by remember { mutableStateOf(false) }
-    var detectionMode     by remember { mutableStateOf(if (manualSourceLang != null) "manual" else "auto") }
+    var showLogSheet        by remember { mutableStateOf(false) }
+    var showLibrarySheet    by remember { mutableStateOf(false) }
+    var showBenchmarkSheet  by remember { mutableStateOf(false) }
+    var detectionMode       by remember { mutableStateOf(if (manualSourceLang != null) "manual" else "auto") }
     var manualLanguage    by remember { mutableStateOf(manualSourceLang ?: Language.HINDI) }
 
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -149,6 +152,7 @@ fun VideoPlayerScreen(
 
             // Clean Header
             CleanHeader(
+                onOpenBenchmark = { showBenchmarkSheet = true },
                 onOpenLibrary = { showLibrarySheet = true },
                 onOpenDiagnostics = { showLogSheet = true }
             )
@@ -304,6 +308,14 @@ fun VideoPlayerScreen(
                 }
             )
         }
+
+        if (showBenchmarkSheet) {
+            TranslationBenchmarkSheet(
+                onDismiss = { showBenchmarkSheet = false },
+                translationEngine = viewModel.translationEngine,
+                ttsManager = viewModel.ttsManager
+            )
+        }
     }
 }
 
@@ -311,6 +323,7 @@ fun VideoPlayerScreen(
 
 @Composable
 private fun CleanHeader(
+    onOpenBenchmark: () -> Unit,
     onOpenLibrary: () -> Unit,
     onOpenDiagnostics: () -> Unit
 ) {
@@ -349,6 +362,7 @@ private fun CleanHeader(
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            HeaderIconButton(Icons.Default.Build, "Benchmark & Test", onOpenBenchmark)
             HeaderIconButton(Icons.AutoMirrored.Filled.List, "Library", onOpenLibrary)
             HeaderIconButton(Icons.Default.Info, "Diagnostics", onOpenDiagnostics)
         }

@@ -10,6 +10,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import com.example.videotranslator.ai.pipeline.VideoTranslationPipeline
+import com.example.videotranslator.ai.translation.NllbTranslationEngine
 import com.example.videotranslator.audio.InstrumentalPlayer
 import com.example.videotranslator.audio.SegmentAudioPlayer
 import com.example.videotranslator.cache.SegmentCache
@@ -47,6 +48,7 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
     // ── Infrastructure & AI Pipeline ───────────────────────────────────────────
     val modelManager = ModelManager(application, viewModelScope)
+    val translationEngine = NllbTranslationEngine(application)
     private val cache = SegmentCache(application)
     private val libraryRepo = VideoLibraryRepository(application)
     private val pipeline = VideoTranslationPipeline(application, cache, libraryRepo)

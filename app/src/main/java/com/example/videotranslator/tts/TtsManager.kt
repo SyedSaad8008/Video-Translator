@@ -381,6 +381,32 @@ class TtsManager(private val context: Context) {
         }
     }
 
+    fun speak(
+        text: String,
+        language: Language,
+        gender: Gender = Gender.MALE,
+        onStart: (() -> Unit)? = null,
+        onDone: (() -> Unit)? = null,
+        onError: (() -> Unit)? = null
+    ) {
+        val ttsEngine = tts ?: run {
+            onError?.invoke()
+            return
+        }
+        val targetLocale = when (language) {
+            Language.HINDI   -> Locale("hi", "IN")
+            Language.ENGLISH -> Locale.US
+            Language.TELUGU  -> Locale("te", "IN")
+        }
+        try {
+            ttsEngine.language = targetLocale
+            ttsEngine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "preview_utterance")
+            onDone?.invoke()
+        } catch (e: Exception) {
+            onError?.invoke()
+        }
+    }
+
     fun shutdown() {
         try {
             tts?.stop()
