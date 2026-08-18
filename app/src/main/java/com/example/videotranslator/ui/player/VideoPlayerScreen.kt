@@ -28,7 +28,6 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -54,13 +53,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.ui.PlayerView
 import com.example.videotranslator.R
 import com.example.videotranslator.library.VideoRun
-import com.example.videotranslator.model.Gender
 import com.example.videotranslator.model.Language
 import com.example.videotranslator.model.ProcessingState
-import com.example.videotranslator.model.VoiceMode
 import com.example.videotranslator.tts.VoiceAvailabilityStatus
-import com.example.videotranslator.ui.models.ModelManagerSheet
-import com.example.videotranslator.ui.settings.VoiceSettingsDialog
 import com.example.videotranslator.util.DiagnosticLogger
 
 // ─────────────────────────── Design Tokens ───────────────────────────────────
@@ -93,9 +88,6 @@ fun VideoPlayerScreen(
 ) {
     val processingState    by viewModel.processingState.collectAsStateWithLifecycle()
     val currentLanguage    by viewModel.currentLanguage.collectAsStateWithLifecycle()
-    val targetLanguage     by viewModel.targetLanguage.collectAsStateWithLifecycle()
-    val voiceMode          by viewModel.voiceMode.collectAsStateWithLifecycle()
-    val lowConfFallback    by viewModel.lowConfFallbackGender.collectAsStateWithLifecycle()
     val missingVoice       by viewModel.missingVoiceWarning.collectAsStateWithLifecycle()
     val voiceStatus        by viewModel.voiceAvailabilityStatus.collectAsStateWithLifecycle()
     val videoUri           by viewModel.videoUri.collectAsStateWithLifecycle()
@@ -106,15 +98,24 @@ fun VideoPlayerScreen(
 
     var showLogSheet      by remember { mutableStateOf(false) }
     var showLibrarySheet  by remember { mutableStateOf(false) }
-    var showModelsSheet   by remember { mutableStateOf(false) }
-    var showVoiceSettings by remember { mutableStateOf(false) }
+    var detectionMode     by remember { mutableStateOf(if (manualSourceLang != null) "manual" else "auto") }
+    var manualLanguage    by remember { mutableStateOf(manualSourceLang ?: Language.HINDI) }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     val context        = LocalContext.current
 
     val videoPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.GetContent()
-    ) { uri: Uri? -> uri?.let { viewModel.onVideoPicked(it) } }
+    ) { uri: Uri? ->
+        uri?.let {
+            if (detectionMode == "manual") {
+                viewModel.setManualSourceLanguage(manualLanguage)
+            } else {
+                viewModel.setManualSourceLanguage(null)
+            }
+            viewModel.onVideoPicked(it)
+        }
+    }
 
     DisposableEffect(lifecycleOwner) {
         val obs = LifecycleEventObserver { _, event ->
@@ -142,26 +143,33 @@ fun VideoPlayerScreen(
         ) {
             Spacer(Modifier.height(14.dp))
 
-            PremiumHeader(
-                onOpenDiagnostics = { showLogSheet = true },
+            // Clean Header
+            CleanHeader(
                 onOpenLibrary = { showLibrarySheet = true },
-                onOpenModels = { showModelsSheet = true },
-                onOpenVoiceSettings = { showVoiceSettings = true }
+                onOpenDiagnostics = { showLogSheet = true }
             )
 
             Spacer(Modifier.height(20.dp))
 
             if (videoUri == null) {
-                PickerCard(
+                CleanPickerCard(
                     onPick = { videoPicker.launch("video/*") },
                     onOpenLibrary = { showLibrarySheet = true },
                     libraryCount = libraryRuns.size,
-                    sourceLanguage = manualSourceLang,
-                    onSourceLanguageChanged = viewModel::setManualSourceLanguage,
-                    targetLanguage = targetLanguage,
-                    onTargetLanguageChanged = viewModel::setTargetLanguage,
-                    voiceMode = voiceMode,
-                    onOpenVoiceSettings = { showVoiceSettings = true }
+                    detectionMode = detectionMode,
+                    onDetectionModeChanged = { mode ->
+                        detectionMode = mode
+                        if (mode == "manual") {
+                            viewModel.setManualSourceLanguage(manualLanguage)
+                        } else {
+                            viewModel.setManualSourceLanguage(null)
+                        }
+                    },
+                    manualLanguage = manualLanguage,
+                    onManualLanguageChanged = { lang ->
+                        manualLanguage = lang
+                        viewModel.setManualSourceLanguage(lang)
+                    }
                 )
             } else {
                 VideoSurface(viewModel = viewModel)
@@ -176,7 +184,7 @@ fun VideoPlayerScreen(
                 exit  = fadeOut(tween(200)) + shrinkVertically(tween(200))
             ) {
                 (processingState as? ProcessingState.Loading)?.let { loading ->
-                    ProcessingCard(state = loading, onCancel = viewModel::cancelPipeline)
+                    CleanProcessingCard(state = loading, onCancel = viewModel::cancelPipeline)
                 }
             }
 
@@ -238,24 +246,7 @@ fun VideoPlayerScreen(
             Spacer(Modifier.height(32.dp))
         }
 
-        // Sheets & Dialogs
-        if (showModelsSheet) {
-            ModelManagerSheet(
-                modelManager = viewModel.modelManager,
-                onDismiss = { showModelsSheet = false }
-            )
-        }
-
-        if (showVoiceSettings) {
-            VoiceSettingsDialog(
-                selectedMode = voiceMode,
-                onModeSelected = viewModel::setVoiceMode,
-                lowConfFallback = lowConfFallback,
-                onFallbackSelected = viewModel::setLowConfFallback,
-                onDismiss = { showVoiceSettings = false }
-            )
-        }
-
+        // Diagnostic & Library Bottom Sheets
         if (showLogSheet) {
             DiagnosticLogSheet(
                 logText = logText,
@@ -286,19 +277,17 @@ fun VideoPlayerScreen(
     }
 }
 
-// ─────────────────────────── Header ──────────────────────────────────────────
+// ─────────────────────────── Clean Header ────────────────────────────────────
 
 @Composable
-private fun PremiumHeader(
-    onOpenDiagnostics: () -> Unit,
+private fun CleanHeader(
     onOpenLibrary: () -> Unit,
-    onOpenModels: () -> Unit,
-    onOpenVoiceSettings: () -> Unit
+    onOpenDiagnostics: () -> Unit
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp),
+            .padding(horizontal = 20.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
@@ -307,33 +296,31 @@ private fun PremiumHeader(
                 painter = painterResource(id = R.drawable.ic_app_logo),
                 contentDescription = "LinguaPlay Logo",
                 modifier = Modifier
-                    .size(38.dp)
+                    .size(40.dp)
                     .clip(RoundedCornerShape(10.dp))
             )
-            Spacer(Modifier.width(10.dp))
+            Spacer(Modifier.width(12.dp))
             Column {
                 Text(
                     "LinguaPlay",
                     color = Ivory,
-                    fontSize = 19.sp,
+                    fontSize = 20.sp,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 0.5.sp
                 )
                 Text(
                     "100% Offline AI Video Translation",
                     color = Gold,
-                    fontSize = 10.sp,
+                    fontSize = 10.5.sp,
                     fontWeight = FontWeight.Medium,
                     letterSpacing = 0.8.sp
                 )
             }
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            HeaderIconButton(Icons.Default.Settings, "Voice Mode", onOpenVoiceSettings)
-            HeaderIconButton(Icons.Default.Add, "AI Models", onOpenModels)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             HeaderIconButton(Icons.AutoMirrored.Filled.List, "Library", onOpenLibrary)
-            HeaderIconButton(Icons.Default.Info, "Logs", onOpenDiagnostics)
+            HeaderIconButton(Icons.Default.Info, "Diagnostics", onOpenDiagnostics)
         }
     }
 }
@@ -352,25 +339,23 @@ private fun HeaderIconButton(icon: androidx.compose.ui.graphics.vector.ImageVect
     }
 }
 
-// ─────────────────────────── Picker Card ─────────────────────────────────────
+// ─────────────────────────── Clean Picker Card ───────────────────────────────
 
 @Composable
-private fun PickerCard(
+private fun CleanPickerCard(
     onPick: () -> Unit,
     onOpenLibrary: () -> Unit,
     libraryCount: Int,
-    sourceLanguage: Language?,
-    onSourceLanguageChanged: (Language?) -> Unit,
-    targetLanguage: Language,
-    onTargetLanguageChanged: (Language) -> Unit,
-    voiceMode: VoiceMode,
-    onOpenVoiceSettings: () -> Unit
+    detectionMode: String,
+    onDetectionModeChanged: (String) -> Unit,
+    manualLanguage: Language,
+    onManualLanguageChanged: (Language) -> Unit
 ) {
     Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-        // ── 1. Original (Source) Language ──
+        // ── 1. Detection Mode Toggle ──
         SurfaceCard {
             Text(
-                "ORIGINAL SPOKEN LANGUAGE",
+                "SPOKEN LANGUAGE MODE",
                 color = MutedLabel,
                 fontSize = 10.sp,
                 fontWeight = FontWeight.Bold,
@@ -379,130 +364,87 @@ private fun PickerCard(
             Spacer(Modifier.height(10.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Auto Detect option
-                val isAuto = sourceLanguage == null
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(if (isAuto) GoldGradient else Brush.linearGradient(listOf(BgElevated, BgElevated)))
-                        .border(1.dp, if (isAuto) Gold else BorderGold, RoundedCornerShape(10.dp))
-                        .clickable { onSourceLanguageChanged(null) }
-                        .padding(vertical = 10.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        "Auto Detect",
-                        color = if (isAuto) Color(0xFF1A1000) else Ivory,
-                        fontSize = 12.sp,
-                        fontWeight = if (isAuto) FontWeight.Bold else FontWeight.Normal
-                    )
-                }
-
-                Language.entries.forEach { lang ->
-                    val isSelected = sourceLanguage == lang
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(if (isSelected) GoldGradient else Brush.linearGradient(listOf(BgElevated, BgElevated)))
-                            .border(1.dp, if (isSelected) Gold else BorderGold, RoundedCornerShape(10.dp))
-                            .clickable { onSourceLanguageChanged(lang) }
-                            .padding(vertical = 10.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            lang.displayName,
-                            color = if (isSelected) Color(0xFF1A1000) else Ivory,
-                            fontSize = 12.sp,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                        )
-                    }
-                }
-            }
-        }
-
-        // ── 2. Target Translation Language ──
-        SurfaceCard {
-            Text(
-                "TRANSLATE TO",
-                color = MutedLabel,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 2.sp
-            )
-            Spacer(Modifier.height(10.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Language.entries.forEach { lang ->
-                    val isSelected = targetLanguage == lang
-                    val isDisabled = sourceLanguage == lang
+                listOf("auto" to "Automatic AI", "manual" to "Manual Selection").forEach { (mode, label) ->
+                    val isSelected = detectionMode == mode
                     Box(
                         modifier = Modifier
                             .weight(1f)
                             .clip(RoundedCornerShape(10.dp))
                             .background(
-                                when {
-                                    isSelected -> Brush.linearGradient(listOf(SuccessGreen.copy(alpha = 0.20f), SuccessGreen.copy(alpha = 0.10f)))
-                                    isDisabled -> Brush.linearGradient(listOf(BgCard, BgCard))
-                                    else -> Brush.linearGradient(listOf(BgElevated, BgElevated))
-                                }
+                                if (isSelected) GoldGradient
+                                else Brush.linearGradient(listOf(BgElevated, BgElevated))
                             )
                             .border(
-                                1.5.dp,
-                                when {
-                                    isSelected -> SuccessGreen
-                                    isDisabled -> Color.Transparent
-                                    else -> BorderGold
-                                },
+                                1.dp,
+                                if (isSelected) Gold else BorderGold,
                                 RoundedCornerShape(10.dp)
                             )
-                            .clickable(enabled = !isDisabled) { onTargetLanguageChanged(lang) }
-                            .padding(vertical = 10.dp),
+                            .clickable { onDetectionModeChanged(mode) }
+                            .padding(vertical = 11.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            lang.displayName,
-                            color = when {
-                                isSelected -> SuccessGreen
-                                isDisabled -> MutedLabel.copy(alpha = 0.5f)
-                                else -> Ivory
-                            },
-                            fontSize = 12.sp,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                            label,
+                            color = if (isSelected) Color(0xFF1A1000) else Ivory,
+                            fontSize = 13.sp,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
                         )
                     }
                 }
             }
+
             Spacer(Modifier.height(8.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+
+            if (detectionMode == "auto") {
                 Text(
-                    "Voice: ${voiceMode.displayName}",
-                    color = GoldDim,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Medium
+                    "AI automatically detects whether dialogue is Hindi, English, or Telugu.",
+                    color = IvoryDim,
+                    fontSize = 11.5.sp,
+                    lineHeight = 16.sp
                 )
-                Text(
-                    "Change ⚙",
-                    color = Gold,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.clickable { onOpenVoiceSettings() }
-                )
+            } else {
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Language.entries.forEach { lang ->
+                        val isSelected = manualLanguage == lang
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(
+                                    if (isSelected) Brush.linearGradient(
+                                        listOf(SuccessGreen.copy(alpha = 0.18f), SuccessGreen.copy(alpha = 0.08f))
+                                    ) else Brush.linearGradient(listOf(BgElevated, BgElevated))
+                                )
+                                .border(
+                                    1.2.dp,
+                                    if (isSelected) SuccessGreen else BorderGold,
+                                    RoundedCornerShape(10.dp)
+                                )
+                                .clickable { onManualLanguageChanged(lang) }
+                                .padding(vertical = 10.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                lang.displayName,
+                                color = if (isSelected) SuccessGreen else Ivory,
+                                fontSize = 13.sp,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                            )
+                        }
+                    }
+                }
             }
         }
 
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(6.dp))
 
-        // ── 3. Video Picker Button ──
+        // ── 2. Primary Video Picker Hero ──
         SurfaceCard(
             modifier = Modifier
                 .fillMaxWidth()
@@ -511,18 +453,23 @@ private fun PickerCard(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 24.dp),
+                    .padding(vertical = 28.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Box(
                     modifier = Modifier
                         .size(64.dp)
                         .clip(CircleShape)
-                        .background(Brush.radialGradient(listOf(Gold.copy(alpha = 0.15f), Color.Transparent)))
+                        .background(Brush.radialGradient(listOf(Gold.copy(alpha = 0.18f), Color.Transparent)))
                         .border(1.5.dp, BorderGoldHi, CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(Icons.Default.PlayArrow, contentDescription = "Select Video", tint = Gold, modifier = Modifier.size(30.dp))
+                    Icon(
+                        Icons.Default.PlayArrow,
+                        contentDescription = "Select Video",
+                        tint = Gold,
+                        modifier = Modifier.size(32.dp)
+                    )
                 }
 
                 Spacer(Modifier.height(16.dp))
@@ -530,23 +477,23 @@ private fun PickerCard(
                 Text(
                     "Select Video from Device",
                     color = Ivory,
-                    fontSize = 16.sp,
+                    fontSize = 17.sp,
                     fontWeight = FontWeight.SemiBold
                 )
 
                 Spacer(Modifier.height(6.dp))
 
-                val srcLabel = sourceLanguage?.displayName ?: "Auto-Detected"
                 Text(
-                    "Translates $srcLabel dialogue → ${targetLanguage.displayName}\n100% On-Device • Whisper STT • NLLB-200 • Piper TTS",
+                    "Translates into English & Telugu with gender-matched voice dubbing\n100% On-Device • Zero Cloud • Complete Privacy",
                     color = IvoryDim,
                     fontSize = 11.5.sp,
                     textAlign = TextAlign.Center,
-                    lineHeight = 16.sp
+                    lineHeight = 17.sp
                 )
             }
         }
 
+        // ── 3. Past Translations Quick Access ──
         if (libraryCount > 0) {
             Spacer(Modifier.height(10.dp))
             SurfaceCard(
@@ -563,8 +510,8 @@ private fun PickerCard(
                         Icon(Icons.AutoMirrored.Filled.List, null, tint = Gold, modifier = Modifier.size(20.dp))
                         Spacer(Modifier.width(10.dp))
                         Column {
-                            Text("Your Past Translations", color = Ivory, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                            Text("$libraryCount saved run${if (libraryCount != 1) "s" else ""}", color = IvoryDim, fontSize = 11.sp)
+                            Text("Saved Translations", color = Ivory, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                            Text("$libraryCount video run${if (libraryCount != 1) "s" else ""}", color = IvoryDim, fontSize = 11.sp)
                         }
                     }
                     Text("→", color = Gold, fontSize = 18.sp, fontWeight = FontWeight.Bold)
@@ -603,10 +550,10 @@ private fun VideoSurface(viewModel: VideoPlayerViewModel) {
     }
 }
 
-// ─────────────────────────── Processing Card ─────────────────────────────────
+// ─────────────────────────── Clean Processing Card ───────────────────────────
 
 @Composable
-private fun ProcessingCard(
+private fun CleanProcessingCard(
     state: ProcessingState.Loading,
     onCancel: () -> Unit
 ) {
@@ -620,7 +567,7 @@ private fun ProcessingCard(
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                     CircularProgressIndicator(
                         progress = { state.progress.coerceAtLeast(0f) },
-                        modifier = Modifier.size(38.dp),
+                        modifier = Modifier.size(36.dp),
                         color = Gold,
                         trackColor = BgElevated,
                         strokeWidth = 3.dp
@@ -653,31 +600,11 @@ private fun ProcessingCard(
 
             Spacer(Modifier.height(12.dp))
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    "Overall Progress",
-                    color = MutedLabel,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Medium
-                )
-                Text(
-                    "${(state.progress * 100).toInt()}%",
-                    color = Gold,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-
-            Spacer(Modifier.height(4.dp))
-
             LinearProgressIndicator(
                 progress = { state.progress.coerceAtLeast(0f) },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(4.dp)
+                    .height(3.5.dp)
                     .clip(RoundedCornerShape(2.dp)),
                 color = Gold,
                 trackColor = BgElevated

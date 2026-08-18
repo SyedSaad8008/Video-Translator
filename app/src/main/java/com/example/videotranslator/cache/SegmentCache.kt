@@ -9,13 +9,13 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.io.FileOutputStream
 
 private const val TAG = "SegmentCache"
 
 /**
- * Enterprise Segment & Audio Cache Manager.
- * Supports unique Run-ID indexing (`context.filesDir/runs/<runId>/`) so every video upload
- * generates a brand-new run entry for side-by-side comparison in the persistent library.
+ * Enterprise Segment & Audio Storage Cache Manager.
+ * Handles storage initialization, atomic saves, and multi-run directory caching.
  */
 class SegmentCache(private val context: Context) {
 
@@ -23,6 +23,16 @@ class SegmentCache(private val context: Context) {
         private set
 
     private val json = Json { prettyPrint = false; ignoreUnknownKeys = true }
+
+    init {
+        // Guarantee base storage directories exist
+        try {
+            File(context.filesDir, "runs").mkdirs()
+            File(context.filesDir, "models").mkdirs()
+        } catch (e: Exception) {
+            Log.w(TAG, "Storage directory creation notice: ${e.message}")
+        }
+    }
 
     // ── Run ID Directory Strategy ─────────────────────────────────────────────
     fun runDir(runId: String): File {
@@ -42,9 +52,11 @@ class SegmentCache(private val context: Context) {
 
     suspend fun loadRun(runId: String): List<TranslationSegment>? = withContext(Dispatchers.IO) {
         val file = segmentFileForRun(runId)
-        if (!file.exists()) return@withContext null
+        if (!file.exists() || file.length() == 0L) return@withContext null
         try {
-            json.decodeFromString<List<TranslationSegment>>(file.readText()).also { lastLoaded = it }
+            val content = file.readText()
+            if (content.isBlank()) return@withContext null
+            json.decodeFromString<List<TranslationSegment>>(content).also { lastLoaded = it }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to load cache for runId: $runId", e)
             null
@@ -52,16 +64,28 @@ class SegmentCache(private val context: Context) {
     }
 
     suspend fun saveRun(runId: String, segments: List<TranslationSegment>) = withContext(Dispatchers.IO) {
+        val targetFile = segmentFileForRun(runId)
+        val tempFile = File(targetFile.parentFile, "segments.json.tmp")
         try {
-            segmentFileForRun(runId).writeText(json.encodeToString(segments))
+            targetFile.parentFile?.mkdirs()
+            val text = json.encodeToString(segments)
+            FileOutputStream(tempFile).use { fos ->
+                fos.write(text.toByteArray(Charsets.UTF_8))
+                fos.flush()
+            }
+            if (tempFile.exists() && tempFile.length() > 0) {
+                if (targetFile.exists()) targetFile.delete()
+                tempFile.renameTo(targetFile)
+            }
             lastLoaded = segments
-            Log.d(TAG, "Saved ${segments.size} segments for runId: $runId")
+            Log.d(TAG, "Saved ${segments.size} segments for runId: $runId ✓")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to save cache for runId: $runId", e)
+            if (tempFile.exists()) tempFile.delete()
         }
     }
 
-    // ── Fallback URI Key Strategy (Backward Compatibility) ─────────────────────
+    // ── Fallback URI Key Strategy ─────────────────────────────────────────────
     private fun keyFor(uri: Uri): String {
         val hash = uri.toString().hashCode().toString(16).takeLast(8)
         val name = uri.lastPathSegment?.replace(Regex("[^a-zA-Z0-9_-]"), "_")?.take(20) ?: "video"

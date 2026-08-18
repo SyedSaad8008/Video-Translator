@@ -14,13 +14,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
-import java.io.InputStream
 
 private const val TAG = "ModelManager"
 
 /**
- * Manages the lifecycle, installation checks, download, storage, and lazy memory loading
- * of all on-device AI models.
+ * Manages the lifecycle, installation checks, automatic background download,
+ * storage provisioning, and lazy memory loading of all on-device AI models.
  */
 class ModelManager(
     private val context: Context,
@@ -33,8 +32,53 @@ class ModelManager(
     private val _modelStatuses = MutableStateFlow<Map<String, ModelStatus>>(emptyMap())
     val modelStatuses: StateFlow<Map<String, ModelStatus>> = _modelStatuses.asStateFlow()
 
+    private val _isAllReady = MutableStateFlow(false)
+    val isAllReady: StateFlow<Boolean> = _isAllReady.asStateFlow()
+
     init {
         refreshStatuses()
+        autoInitializeAllModels()
+    }
+
+    /**
+     * Automatically extracts bundled assets and downloads any missing on-device models
+     * in the background upon application startup.
+     */
+    fun autoInitializeAllModels() {
+        scope.launch(Dispatchers.IO) {
+            DiagnosticLogger.log(TAG, "Starting automatic on-device AI model initialization & storage check…")
+            modelsDir.mkdirs()
+
+            // 1. Extract any bundled assets first
+            for (model in ModelRegistry.ALL_MODELS) {
+                if (model.isBundledInAssets) {
+                    extractAssetIfNeeded(model)
+                }
+            }
+
+            // 2. Automatically download missing models in the background
+            for (model in ModelRegistry.ALL_MODELS) {
+                val file = getModelFile(model)
+                if (!file.exists() || file.length() == 0L) {
+                    if (downloader.hasSufficientStorage(model.sizeBytes)) {
+                        DiagnosticLogger.log(TAG, "Auto-downloading required model in background: ${model.name}…")
+                        try {
+                            downloader.downloadModel(
+                                modelInfo = model,
+                                targetFile = file,
+                                onProgress = { progress -> updateStatus(model.id, ModelStatus.Downloading(progress)) }
+                            )
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Background auto-download notice for ${model.name}: ${e.message}")
+                        }
+                    }
+                }
+            }
+
+            refreshStatuses()
+            _isAllReady.value = true
+            DiagnosticLogger.log(TAG, "Automatic on-device AI model initialization complete ✓")
+        }
     }
 
     /**
@@ -68,35 +112,6 @@ class ModelManager(
     fun getModelFile(modelId: String): File? {
         val model = ModelRegistry.getModelById(modelId) ?: return null
         return getModelFile(model)
-    }
-
-    /**
-     * Downloads an AI model asynchronously and updates progress.
-     */
-    fun downloadModel(modelId: String) {
-        val model = ModelRegistry.getModelById(modelId) ?: return
-        val currentStatus = _modelStatuses.value[modelId]
-        if (currentStatus is ModelStatus.Downloading) return
-
-        updateStatus(modelId, ModelStatus.Downloading(0f))
-
-        scope.launch {
-            val targetFile = getModelFile(model)
-            val result = downloader.downloadModel(
-                modelInfo = model,
-                targetFile = targetFile,
-                onProgress = { progress ->
-                    updateStatus(modelId, ModelStatus.Downloading(progress))
-                }
-            )
-
-            if (result.isSuccess) {
-                updateStatus(modelId, ModelStatus.Installed)
-            } else {
-                val err = result.exceptionOrNull()?.localizedMessage ?: "Download failed"
-                updateStatus(modelId, ModelStatus.Error(err))
-            }
-        }
     }
 
     /**
