@@ -98,6 +98,9 @@ dependencies {
   // ML Kit On-Device Translation
   implementation(libs.mlkit.translate)
 
+  // Vosk Offline Speech Recognition
+  implementation(libs.vosk.android)
+
   // Kotlin coroutines bridge for ML Kit Tasks
   implementation(libs.kotlinx.coroutines.play.services)
 

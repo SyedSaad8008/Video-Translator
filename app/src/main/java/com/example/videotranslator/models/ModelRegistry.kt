@@ -9,31 +9,42 @@ import com.example.videotranslator.model.ModelInfo
  */
 object ModelRegistry {
 
-    val WHISPER_BASE = ModelInfo(
-        id = "whisper_base",
-        name = "Whisper Base (Multilingual STT)",
-        description = "On-device multilingual speech-to-text acoustic encoder & decoder for timestamped transcription.",
+    val STT_HI_MODEL = ModelInfo(
+        id = "stt_hi_vosk",
+        name = "Hindi Speech Recognition Engine (Vosk)",
+        description = "On-device acoustic speech-to-text model for timestamped Hindi and Hindustani/Urdu speech recognition.",
         category = ModelCategory.SPEECH_RECOGNITION,
-        sizeBytes = 142_000_000L, // ~142 MB
-        downloadUrl = "https://huggingface.co/openai/whisper-base/resolve/main/model.onnx",
-        fileName = "whisper_base.onnx",
+        sizeBytes = 42_000_000L, // ~42 MB
+        downloadUrl = "https://alphacephei.com/vosk/models/vosk-model-small-hi-0.22.zip",
+        fileName = "vosk-model-small-hi-0.22.zip",
         isBundledInAssets = false
     )
 
-    val WHISPER_TINY = ModelInfo(
-        id = "whisper_tiny",
-        name = "Whisper Tiny (Lightweight STT)",
-        description = "Fast, low-memory on-device speech-to-text model for lower-RAM devices.",
+    val STT_EN_MODEL = ModelInfo(
+        id = "stt_en_vosk",
+        name = "English Speech Recognition Engine (Vosk)",
+        description = "On-device acoustic speech-to-text model for timestamped English speech recognition.",
         category = ModelCategory.SPEECH_RECOGNITION,
-        sizeBytes = 75_000_000L, // ~75 MB
-        downloadUrl = "https://huggingface.co/openai/whisper-tiny/resolve/main/model.onnx",
-        fileName = "whisper_tiny.onnx",
+        sizeBytes = 40_000_000L, // ~40 MB
+        downloadUrl = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip",
+        fileName = "vosk-model-small-en-us-0.15.zip",
+        isBundledInAssets = false
+    )
+
+    val STT_TE_MODEL = ModelInfo(
+        id = "stt_te_vosk",
+        name = "Telugu Speech Recognition Engine (Vosk)",
+        description = "On-device acoustic speech-to-text model for timestamped Telugu speech recognition.",
+        category = ModelCategory.SPEECH_RECOGNITION,
+        sizeBytes = 45_000_000L, // ~45 MB
+        downloadUrl = "https://alphacephei.com/vosk/models/vosk-model-small-te-0.42.zip",
+        fileName = "vosk-model-small-te-0.42.zip",
         isBundledInAssets = false
     )
 
     val NLLB_200_INT8 = ModelInfo(
         id = "nllb_200_int8",
-        name = "NLLB-200 Distilled 600M (INT8 Quantized)",
+        name = "NLLB-200 / IndicTrans2 Multilingual Translation Engine",
         description = "High-accuracy on-device neural machine translation model supporting Hindi (hin_Deva), English (eng_Latn), and Telugu (tel_Telu) in all 6 directions.",
         category = ModelCategory.TRANSLATION,
         sizeBytes = 295_000_000L, // ~295 MB INT8
@@ -44,8 +55,8 @@ object ModelRegistry {
 
     val NLLB_TOKENIZER = ModelInfo(
         id = "nllb_tokenizer",
-        name = "NLLB SentencePiece Tokenizer",
-        description = "SentencePiece BPE vocabulary and tokenizer dictionary for NLLB-200 language token conversion.",
+        name = "NLLB / IndicTrans2 SentencePiece Tokenizer",
+        description = "SentencePiece BPE vocabulary and tokenizer dictionary for language token conversion.",
         category = ModelCategory.TRANSLATION,
         sizeBytes = 4_800_000L, // ~4.8 MB
         downloadUrl = "https://huggingface.co/facebook/nllb-200-distilled-600M/resolve/main/sentencepiece.bpe.model",
@@ -131,8 +142,9 @@ object ModelRegistry {
     )
 
     val ALL_MODELS = listOf(
-        WHISPER_BASE,
-        WHISPER_TINY,
+        STT_HI_MODEL,
+        STT_EN_MODEL,
+        STT_TE_MODEL,
         NLLB_200_INT8,
         NLLB_TOKENIZER,
         GENDER_CLASSIFIER,

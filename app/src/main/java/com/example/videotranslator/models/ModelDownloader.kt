@@ -8,11 +8,13 @@ import com.example.videotranslator.util.DiagnosticLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import java.util.zip.ZipInputStream
 
 private const val TAG = "ModelDownloader"
 private const val BUFFER_SIZE = 8192
@@ -21,7 +23,7 @@ private const val READ_TIMEOUT_MS = 30_000
 
 /**
  * Handles downloading on-device AI model files with storage pre-checks,
- * progress updates, checksum validation, and cancelation support.
+ * progress updates, checksum validation, and zip extraction.
  */
 class ModelDownloader(private val context: Context) {
 
@@ -32,7 +34,6 @@ class ModelDownloader(private val context: Context) {
         return try {
             val stat = StatFs(context.filesDir.absolutePath)
             val availableBytes = stat.availableBlocksLong * stat.blockSizeLong
-            // Keep at least 50 MB buffer beyond model size
             availableBytes > (requiredBytes + 50 * 1024 * 1024L)
         } catch (e: Exception) {
             Log.w(TAG, "Storage check failed: ${e.message}")
@@ -98,15 +99,20 @@ class ModelDownloader(private val context: Context) {
             outputStream.close()
             inputStream.close()
 
-            // Verify size
             if (tempFile.length() < 1024) {
                 throw IllegalStateException("Downloaded file is empty or corrupted (< 1KB).")
+            }
+
+            // If zip archive (e.g. Vosk acoustic models), unzip to parent directory
+            if (targetFile.name.endsWith(".zip")) {
+                unzip(tempFile, targetFile.parentFile ?: context.filesDir)
             }
 
             // Rename temp to target
             if (targetFile.exists()) targetFile.delete()
             if (!tempFile.renameTo(targetFile)) {
-                throw IllegalStateException("Failed to move temporary download to target file: ${targetFile.name}")
+                tempFile.copyTo(targetFile, overwrite = true)
+                tempFile.delete()
             }
 
             DiagnosticLogger.log(TAG, "Download and verification complete for ${modelInfo.name} ✓ (${targetFile.length() / (1024*1024)} MB)")
@@ -121,6 +127,30 @@ class ModelDownloader(private val context: Context) {
             try { outputStream?.close() } catch (_: Exception) {}
             try { inputStream?.close() } catch (_: Exception) {}
             connection?.disconnect()
+        }
+    }
+
+    private fun unzip(zipFile: File, targetDir: File) {
+        try {
+            ZipInputStream(FileInputStream(zipFile)).use { zis ->
+                var entry = zis.nextEntry
+                while (entry != null) {
+                    val newFile = File(targetDir, entry.name)
+                    if (entry.isDirectory) {
+                        newFile.mkdirs()
+                    } else {
+                        newFile.parentFile?.mkdirs()
+                        FileOutputStream(newFile).use { fos ->
+                            zis.copyTo(fos)
+                        }
+                    }
+                    zis.closeEntry()
+                    entry = zis.nextEntry
+                }
+            }
+            DiagnosticLogger.log(TAG, "Unzipped ${zipFile.name} successfully ✓")
+        } catch (e: Exception) {
+            Log.w(TAG, "Unzip error: ${e.message}")
         }
     }
 
