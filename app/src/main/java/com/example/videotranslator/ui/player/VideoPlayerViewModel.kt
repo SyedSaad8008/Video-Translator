@@ -3,6 +3,7 @@ package com.example.videotranslator.ui.player
 import android.app.Application
 import android.net.Uri
 import android.util.Log
+import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.MediaItem
@@ -22,6 +23,7 @@ import com.example.videotranslator.models.ModelManager
 import com.example.videotranslator.tts.TtsManager
 import com.example.videotranslator.tts.VoiceAvailabilityStatus
 import com.example.videotranslator.util.DiagnosticLogger
+import com.example.videotranslator.util.VideoExporter
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -51,6 +53,7 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
     val ttsManager = TtsManager(application)
     private val segmentAudioPlayer = SegmentAudioPlayer()
     private val instrumental = InstrumentalPlayer(viewModelScope)
+    private val videoExporter = VideoExporter(application)
 
     // ── Playback & UI State ───────────────────────────────────────────────────
     val exoPlayer: ExoPlayer = ExoPlayer.Builder(application).build()
@@ -231,6 +234,9 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
+    /**
+     * Tightly polls audio playback timestamps on Dispatchers.Main to ensure safe ExoPlayer thread access.
+     */
     private fun startPlaybackPolling(
         segments: List<TranslationSegment>,
         language: Language,
@@ -245,10 +251,10 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
         val renderedDir = cache.renderedAudioDirForRun(runId)
 
-        ttsPollingJob = viewModelScope.launch(Dispatchers.Default) {
+        ttsPollingJob = viewModelScope.launch(Dispatchers.Main) {
             while (isActive) {
                 if (exoPlayer.isPlaying) {
-                    val pos = withContext(Dispatchers.Main) { exoPlayer.currentPosition }
+                    val pos = exoPlayer.currentPosition
                     for (i in segments.indices) {
                         val seg = segments[i]
                         val inWindow = pos in (seg.startMs - TRIGGER_TOLERANCE_MS)..(seg.endMs + TRIGGER_TOLERANCE_MS)
@@ -293,6 +299,31 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
             } else {
                 startPipeline(Uri.parse(run.uriString))
             }
+        }
+    }
+
+    fun exportRun(run: VideoRun, language: Language) {
+        viewModelScope.launch {
+            val res = videoExporter.exportTranslatedAudioToDownloads(run, language)
+            if (res.isSuccess) {
+                Toast.makeText(
+                    getApplication(),
+                    "Exported ${run.videoTitle} (${language.displayName}) to Downloads/LinguaPlay ✓",
+                    Toast.LENGTH_LONG
+                ).show()
+            } else {
+                Toast.makeText(
+                    getApplication(),
+                    "Export failed: ${res.exceptionOrNull()?.localizedMessage}",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+    }
+
+    fun shareRun(run: VideoRun, language: Language) {
+        viewModelScope.launch {
+            videoExporter.shareTranslatedFile(run, language)
         }
     }
 

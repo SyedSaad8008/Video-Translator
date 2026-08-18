@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -91,6 +92,7 @@ fun VideoPlayerScreen(
     val missingVoice       by viewModel.missingVoiceWarning.collectAsStateWithLifecycle()
     val voiceStatus        by viewModel.voiceAvailabilityStatus.collectAsStateWithLifecycle()
     val videoUri           by viewModel.videoUri.collectAsStateWithLifecycle()
+    val currentRunId       by viewModel.currentRunId.collectAsStateWithLifecycle()
     val libraryRuns        by viewModel.libraryRuns.collectAsStateWithLifecycle()
     val logText            by DiagnosticLogger.logTextFlow.collectAsStateWithLifecycle()
     val detectedSourceLang by viewModel.detectedSourceLanguage.collectAsStateWithLifecycle()
@@ -220,6 +222,25 @@ fun VideoPlayerScreen(
                     Spacer(Modifier.height(10.dp))
                     MusicHint(currentLanguage, detectedSourceLang)
                     Spacer(Modifier.height(14.dp))
+
+                    // Export & Share Current Active Video Run
+                    val activeRun = libraryRuns.find { it.runId == currentRunId }
+                        ?: VideoRun(
+                            runId = currentRunId ?: "current_run",
+                            uriString = videoUri?.toString() ?: "",
+                            videoTitle = videoUri?.lastPathSegment ?: "Translated Video",
+                            detectedSourceLanguage = detectedSourceLang.name
+                        )
+
+                    ExportShareRow(
+                        run = activeRun,
+                        currentLanguage = currentLanguage,
+                        onExport = { viewModel.exportRun(activeRun, currentLanguage) },
+                        onShare = { viewModel.shareRun(activeRun, currentLanguage) }
+                    )
+
+                    Spacer(Modifier.height(12.dp))
+
                     ActionButtonRow(
                         onUploadNew = { videoPicker.launch("video/*") },
                         onOpenLibrary = { showLibrarySheet = true }
@@ -269,6 +290,12 @@ fun VideoPlayerScreen(
                 onSelectRun = { run ->
                     viewModel.loadPastRun(run)
                     showLibrarySheet = false
+                },
+                onExportRun = { run ->
+                    viewModel.exportRun(run, currentLanguage)
+                },
+                onShareRun = { run ->
+                    viewModel.shareRun(run, currentLanguage)
                 },
                 onDeleteRun = { viewModel.deleteRun(it) },
                 onUploadNew = {
@@ -549,7 +576,7 @@ private fun CleanPickerCard(
                         Icon(Icons.AutoMirrored.Filled.List, null, tint = Gold, modifier = Modifier.size(20.dp))
                         Spacer(Modifier.width(10.dp))
                         Column {
-                            Text("Saved Translations", color = Ivory, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                            Text("Saved Translations & Storage", color = Ivory, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                             Text("$libraryCount video run${if (libraryCount != 1) "s" else ""}", color = IvoryDim, fontSize = 11.sp)
                         }
                     }
@@ -799,6 +826,38 @@ private fun MusicHint(language: Language, sourceLanguage: Language) {
     }
 }
 
+// ─────────────────────────── Export & Share Row ──────────────────────────────
+
+@Composable
+private fun ExportShareRow(
+    run: VideoRun,
+    currentLanguage: Language,
+    onExport: () -> Unit,
+    onShare: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        ActionButton(
+            modifier = Modifier.weight(1f),
+            label = "Save to Downloads",
+            accent = true,
+            icon = { Text("💾", fontSize = 14.sp) },
+            onClick = onExport
+        )
+        ActionButton(
+            modifier = Modifier.weight(1f),
+            label = "Share Track",
+            accent = false,
+            icon = { Icon(Icons.Default.Share, null, tint = InfoBlue, modifier = Modifier.size(16.dp)) },
+            onClick = onShare
+        )
+    }
+}
+
 // ─────────────────────────── Action Buttons ──────────────────────────────────
 
 @Composable
@@ -817,7 +876,7 @@ private fun ActionButtonRow(onUploadNew: () -> Unit, onOpenLibrary: () -> Unit) 
         )
         ActionButton(
             modifier = Modifier.weight(1f),
-            label = "Saved Translations",
+            label = "Storage & Library",
             accent = true,
             onClick = onOpenLibrary
         )
@@ -917,6 +976,8 @@ private fun LibrarySheet(
     runs: List<VideoRun>,
     onDismiss: () -> Unit,
     onSelectRun: (VideoRun) -> Unit,
+    onExportRun: (VideoRun) -> Unit,
+    onShareRun: (VideoRun) -> Unit,
     onDeleteRun: (String) -> Unit,
     onUploadNew: () -> Unit
 ) {
@@ -937,10 +998,10 @@ private fun LibrarySheet(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column {
-                    Text("Your Translations", color = Ivory, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                    Text("Storage & Saved Videos", color = Ivory, fontSize = 20.sp, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(2.dp))
                     Text(
-                        "${runs.size} saved run${if (runs.size != 1) "s" else ""}",
+                        "${runs.size} translated video${if (runs.size != 1) "s" else ""} stored on-device",
                         color = IvoryDim,
                         fontSize = 12.sp
                     )
@@ -969,21 +1030,23 @@ private fun LibrarySheet(
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Icon(Icons.AutoMirrored.Filled.List, null, tint = MutedLabel, modifier = Modifier.size(40.dp))
                         Spacer(Modifier.height(12.dp))
-                        Text("No translations yet", color = IvoryDim, fontSize = 14.sp)
-                        Text("Upload a video to get started", color = MutedLabel, fontSize = 12.sp)
+                        Text("No saved videos in storage yet", color = IvoryDim, fontSize = 14.sp)
+                        Text("Translate a video to access it offline anytime", color = MutedLabel, fontSize = 12.sp)
                     }
                 }
             } else {
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 420.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                        .heightIn(max = 440.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     items(runs, key = { it.runId }) { run ->
                         LibraryRunCard(
                             run = run,
                             onPlay = { onSelectRun(run) },
+                            onExport = { onExportRun(run) },
+                            onShare = { onShareRun(run) },
                             onDelete = { onDeleteRun(run.runId) }
                         )
                     }
@@ -994,7 +1057,13 @@ private fun LibrarySheet(
 }
 
 @Composable
-private fun LibraryRunCard(run: VideoRun, onPlay: () -> Unit, onDelete: () -> Unit) {
+private fun LibraryRunCard(
+    run: VideoRun,
+    onPlay: () -> Unit,
+    onExport: () -> Unit,
+    onShare: () -> Unit,
+    onDelete: () -> Unit
+) {
     val statusColor = when (run.status) {
         "Ready" -> SuccessGreen
         "Error" -> ErrorRed
@@ -1004,50 +1073,85 @@ private fun LibraryRunCard(run: VideoRun, onPlay: () -> Unit, onDelete: () -> Un
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(14.dp))
             .background(BgElevated)
-            .border(1.dp, BorderGold, RoundedCornerShape(12.dp))
-            .clickable { onPlay() }
+            .border(1.dp, BorderGold, RoundedCornerShape(14.dp))
             .padding(14.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(8.dp)
-                    .clip(CircleShape)
-                    .background(statusColor)
-            )
-            Spacer(Modifier.width(12.dp))
-
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    run.videoTitle,
-                    color = Ivory,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(statusColor)
                 )
-                Spacer(Modifier.height(3.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    MetadataPill(run.formattedDate)
-                    MetadataPill("${run.segmentCount} segs")
-                    MetadataPill(
-                        if (run.detectedGender == "FEMALE") "♀ Female" else "♂ Male"
+                Spacer(Modifier.width(10.dp))
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        run.videoTitle,
+                        color = Ivory,
+                        fontSize = 14.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
+                    Spacer(Modifier.height(4.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        MetadataPill(run.formattedDate)
+                        MetadataPill("${run.segmentCount} segments")
+                        MetadataPill(
+                            if (run.detectedGender == "FEMALE") "♀ Female" else "♂ Male"
+                        )
+                    }
+                }
+
+                IconButton(onClick = onPlay, modifier = Modifier.size(38.dp)) {
+                    Icon(Icons.Default.PlayArrow, "Play", tint = SuccessGreen, modifier = Modifier.size(24.dp))
                 }
             }
 
-            Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.height(10.dp))
 
-            IconButton(onClick = onPlay, modifier = Modifier.size(36.dp)) {
-                Icon(Icons.Default.PlayArrow, "Play", tint = SuccessGreen, modifier = Modifier.size(20.dp))
-            }
-            IconButton(onClick = onDelete, modifier = Modifier.size(36.dp)) {
-                Icon(Icons.Default.Delete, "Delete", tint = ErrorRed.copy(alpha = 0.7f), modifier = Modifier.size(18.dp))
+            // Action row: Export, Share, Delete
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedButton(
+                    onClick = onExport,
+                    modifier = Modifier.height(32.dp),
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, Gold.copy(alpha = 0.4f)),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
+                ) {
+                    Text("💾 Save", color = Gold, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                }
+
+                Spacer(Modifier.width(8.dp))
+
+                OutlinedButton(
+                    onClick = onShare,
+                    modifier = Modifier.height(32.dp),
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, InfoBlue.copy(alpha = 0.4f)),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
+                ) {
+                    Icon(Icons.Default.Share, null, tint = InfoBlue, modifier = Modifier.size(12.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Share", color = InfoBlue, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                }
+
+                Spacer(Modifier.width(8.dp))
+
+                IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Default.Delete, "Delete", tint = ErrorRed.copy(alpha = 0.7f), modifier = Modifier.size(17.dp))
+                }
             }
         }
     }
