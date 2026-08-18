@@ -11,16 +11,14 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.FileOutputStream
 
 private const val TAG = "ModelManager"
 
 data class ModelInstallProgress(
     val currentModelName: String = "",
     val installedCount: Int = 0,
-    val totalCount: Int = 4,
+    val totalCount: Int = 11,
     val currentProgress: Float = 0f,
     val isComplete: Boolean = false,
     val statusMessage: String = "Initializing AI engines…"
@@ -28,7 +26,7 @@ data class ModelInstallProgress(
 
 /**
  * Manages the lifecycle, installation checks, automatic background download,
- * storage provisioning, and status tracking of all on-device AI models.
+ * storage provisioning, and status tracking of all 11 on-device AI models.
  */
 class ModelManager(
     private val context: Context,
@@ -41,7 +39,7 @@ class ModelManager(
     private val _modelStatuses = MutableStateFlow<Map<String, ModelStatus>>(emptyMap())
     val modelStatuses: StateFlow<Map<String, ModelStatus>> = _modelStatuses.asStateFlow()
 
-    private val _installProgress = MutableStateFlow(ModelInstallProgress())
+    private val _installProgress = MutableStateFlow(ModelInstallProgress(totalCount = ModelRegistry.ALL_MODELS.size))
     val installProgress: StateFlow<ModelInstallProgress> = _installProgress.asStateFlow()
 
     private val _isAllReady = MutableStateFlow(false)
@@ -54,24 +52,18 @@ class ModelManager(
 
     /**
      * Automatically extracts bundled assets and provisions on-device models
-     * in the background with visible progress updates.
+     * in the background with visible progress updates across all 11 models.
      */
     fun autoInitializeAllModels() {
         scope.launch(Dispatchers.IO) {
-            DiagnosticLogger.log("AI_MODELS", "Starting on-device Neural AI model provisioning…")
+            DiagnosticLogger.log("AI_MODELS", "Starting on-device Neural AI model provisioning for all ${ModelRegistry.ALL_MODELS.size} models…")
             modelsDir.mkdirs()
 
-            val primaryModels = listOf(
-                ModelRegistry.WHISPER_BASE,
-                ModelRegistry.NLLB_200_INT8,
-                ModelRegistry.GENDER_CLASSIFIER,
-                ModelRegistry.TTS_EN_MALE
-            )
-
-            val totalCount = primaryModels.size
+            val allModels = ModelRegistry.ALL_MODELS
+            val totalCount = allModels.size
             var installedCount = 0
 
-            for ((idx, model) in primaryModels.withIndex()) {
+            for ((idx, model) in allModels.withIndex()) {
                 val file = getModelFile(model)
                 val isInstalled = file.exists() && file.length() > 0L
 
@@ -94,7 +86,7 @@ class ModelManager(
                     totalCount = totalCount,
                     currentProgress = 0.05f,
                     isComplete = false,
-                    statusMessage = "Installing ${idx + 1} of $totalCount: ${model.name} (${model.formattedSize})…"
+                    statusMessage = "Installing Model ${idx + 1} of $totalCount: ${model.name} (${model.formattedSize})…"
                 )
 
                 DiagnosticLogger.log(
@@ -115,7 +107,7 @@ class ModelManager(
                                     totalCount = totalCount,
                                     currentProgress = p,
                                     isComplete = false,
-                                    statusMessage = "Downloading ${model.name} (${(p * 100).toInt()}%)"
+                                    statusMessage = "Downloading Model ${idx + 1}/$totalCount: ${model.name} (${(p * 100).toInt()}%)"
                                 )
                             }
                         )
@@ -134,9 +126,9 @@ class ModelManager(
                 totalCount = totalCount,
                 currentProgress = 1.0f,
                 isComplete = true,
-                statusMessage = "100% On-Device Neural AI Engines Ready"
+                statusMessage = "100% On-Device Neural AI Engines Ready (${totalCount}/${totalCount} models)"
             )
-            DiagnosticLogger.log("AI_MODELS", "On-device AI model initialization complete ✓ (Ready for offline translation)")
+            DiagnosticLogger.log("AI_MODELS", "On-device AI model initialization complete ✓ (All $totalCount models active)")
         }
     }
 

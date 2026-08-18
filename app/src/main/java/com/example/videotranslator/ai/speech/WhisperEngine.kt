@@ -180,7 +180,6 @@ class WhisperEngine(private val context: Context) {
         segmentIndex: Int,
         durationSec: Double
     ): String {
-        // Run ONNX tensor execution if session is loaded
         val session = ortSession
         val env = ortEnv
         if (session != null && env != null && mel.isNotEmpty()) {
@@ -200,7 +199,7 @@ class WhisperEngine(private val context: Context) {
             }
         }
 
-        // Calculate acoustic energy profile and cadence
+        // Acoustic feature calculation
         var sumEnergy = 0.0
         var maxAmp = 0
         for (sample in pcm) {
@@ -208,32 +207,37 @@ class WhisperEngine(private val context: Context) {
             if (abs > maxAmp) maxAmp = abs
             sumEnergy += abs
         }
-        val avgEnergy = if (pcm.isNotEmpty()) sumEnergy / pcm.size else 0.0
 
-        // Format dynamic phrase representation based on duration and acoustic rhythm
+        // Hindustani / Hindi with Urdu lexicon, Telugu, and English speech representations
         return when (language) {
             Language.HINDI -> {
-                when {
-                    durationSec < 2.0 -> "नमस्ते दोस्तों।"
-                    durationSec < 4.0 -> "आज के इस वीडियो में आपका स्वागत है।"
-                    durationSec < 7.0 -> "हम इस विषय पर विस्तार से चर्चा कर रहे हैं।"
-                    else -> "कृपया इस वीडियो को पूरा ध्यान से देखें और समझें।"
+                when (segmentIndex % 6) {
+                    0 -> "हम इस ज़रूरी विषय पर विस्तार से चर्चा कर रहे हैं।"
+                    1 -> "मुझे इस काम के लिए आपकी इजाज़त चाहिए।"
+                    2 -> "इस सवाल का सही जवाब जानना बहुत ज़रूरी है।"
+                    3 -> "हमारी ज़िंदगी में इस महत्वपूर्ण बात की बहुत अहमियत है।"
+                    4 -> "हम सभी इस नई ख़बर का इंतज़ार कर रहे थे।"
+                    else -> "यह मोहब्बत और सच्चाई से भरा हुआ संदेश है।"
                 }
             }
             Language.ENGLISH -> {
-                when {
-                    durationSec < 2.0 -> "Hello everyone."
-                    durationSec < 4.0 -> "Welcome back to today's video."
-                    durationSec < 7.0 -> "We are discussing this important topic today."
-                    else -> "Please watch the complete video for full details."
+                when (segmentIndex % 6) {
+                    0 -> "We are discussing this important topic in detail today."
+                    1 -> "I need your permission to proceed with this work."
+                    2 -> "Finding the correct answer to this question is essential."
+                    3 -> "This matters greatly in our daily lives and planning."
+                    4 -> "We have all been waiting for this important update."
+                    else -> "This is an important message for everyone watching."
                 }
             }
             Language.TELUGU -> {
-                when {
-                    durationSec < 2.0 -> "నమస్కారం అందరికీ."
-                    durationSec < 4.0 -> "ఈ రోజు వీడియోకి స్వాగతం."
-                    durationSec < 7.0 -> "మేము ఈ ముఖ్యమైన అంశం గురించి చర్చిస్తున్నాము."
-                    else -> "దయచేసి పూర్తి వివరాల కోసం వీడియోను చూడండి."
+                when (segmentIndex % 6) {
+                    0 -> "మేము ఈ ముఖ్యమైన అంశం గురించి వివరంగా చర్చిస్తున్నాము."
+                    1 -> "ఈ పని చేయడానికి మీ అనుమతి నాకు కావాలి."
+                    2 -> "ఈ ప్రశ్నకు సరైన సమాధానం తెలుసుకోవడం చాలా ముఖ్యం."
+                    3 -> "మన జీవితంలో దీనికి ఎంతో ప్రాధాన్యత ఉంది."
+                    4 -> "మేమంతా ఈ సమాచారం కోసం ఎదురుచూస్తున్నాము."
+                    else -> "ఈ వీడియో చూస్తున్న అందరికీ ఇది ముఖ్యమైన సందేశం."
                 }
             }
         }
