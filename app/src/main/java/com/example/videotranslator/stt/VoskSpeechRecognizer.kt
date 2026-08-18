@@ -21,32 +21,30 @@ private const val MODEL_EN_ASSET_ZIP = "model-en-small.zip"
 /**
  * Stage 2 Dual-Model Vosk Speech-to-Text Recognizer & Language Prober.
  *
- * Real Acoustic-Confidence & Vocabulary-Validation Source Language Detection:
- *  1. Runs a 30-second dual-probe across both Hindi and English Vosk models.
- *  2. Validates recognized words against authentic English and Hindi dictionary vocabularies.
- *  3. Computes authentic scores: `score = selfReportedConfidence * dictionaryValidityRatio`.
- *  4. Decision rules:
- *     - Hindi authentic & vocabulary valid (ratio >= 35%) -> HINDI
- *     - English authentic & vocabulary valid (ratio >= 35%) -> ENGLISH
- *     - Both models fail vocabulary check (< 30% dictionary words) -> TELUGU (by elimination)
+ * Robust Multi-Signal Substantive Vocabulary Validation:
+ *  1. Probes speech across Hindi and English acoustic models.
+ *  2. Evaluates substantive dictionary words (excluding 1-2 letter phonetic false positives).
+ *  3. Decision boundaries:
+ *     - Authentic Hindi dictionary presence (Devanagari ratio >= 18% & validCount >= 3) -> HINDI
+ *     - Substantive English dictionary presence (ratio >= 30% & >= 2 multi-syllable content words) -> ENGLISH
+ *     - Non-matching / Dravidian audio (neither Hindi nor English authentic) -> TELUGU
  */
 class VoskSpeechRecognizer(private val context: Context) {
 
     private var hiModel: Model? = null
     private var enModel: Model? = null
 
-    // Expanded high-frequency English dictionary (~500 words)
-    // Covers: function words, pronouns, common verbs, nouns, adjectives, adverbs, conjunctions
-    private val englishVocabulary = setOf(
-        // Function words & pronouns
-        "the", "be", "to", "of", "and", "in", "that", "have", "it", "for", "not", "on", "with", "he",
-        "as", "you", "do", "at", "this", "but", "his", "by", "from", "they", "we", "say", "her", "she", "or",
-        "an", "will", "my", "one", "all", "would", "there", "their", "what", "so", "up", "out", "if", "about",
-        "who", "get", "which", "go", "me", "when", "make", "can", "like", "time", "no", "just", "him", "know",
-        "take", "people", "into", "year", "your", "good", "some", "could", "them", "see", "other", "than",
-        "then", "now", "look", "only", "come", "its", "over", "think", "also", "back", "after", "use", "two",
-        "how", "our", "work", "first", "well", "way", "even", "new", "want", "because", "any", "these", "give",
-        "day", "most", "us", "been", "has", "had", "did", "does", "am", "are", "is", "was", "were",
+    // Substantive English vocabulary (length >= 3, avoiding single/double letter noise tokens)
+    private val englishSubstantiveVocabulary = setOf(
+        // Function words & pronouns (3+ chars)
+        "the", "and", "that", "have", "for", "not", "with", "you", "this", "but", "his", "from",
+        "they", "say", "her", "she", "will", "one", "all", "would", "there", "their", "what",
+        "out", "about", "who", "get", "which", "when", "make", "can", "like", "time", "just",
+        "him", "know", "take", "people", "into", "year", "your", "good", "some", "could", "them",
+        "see", "other", "than", "then", "now", "look", "only", "come", "its", "over", "think",
+        "also", "back", "after", "use", "two", "how", "our", "work", "first", "well", "way",
+        "even", "new", "want", "because", "any", "these", "give", "day", "most", "been",
+        "has", "had", "did", "does", "are", "was", "were",
         // Common verbs
         "tell", "ask", "try", "need", "feel", "become", "leave", "put", "mean", "keep", "let", "begin",
         "seem", "help", "show", "hear", "play", "run", "move", "live", "believe", "hold", "bring", "happen",
@@ -55,7 +53,7 @@ class VoskSpeechRecognizer(private val context: Context) {
         "add", "spend", "grow", "open", "walk", "win", "offer", "remember", "love", "consider", "appear",
         "buy", "wait", "serve", "die", "send", "expect", "build", "stay", "fall", "cut", "reach", "kill",
         "remain", "suggest", "raise", "pass", "sell", "require", "report", "decide", "pull", "start",
-        "develop", "shall", "might", "may", "already", "still", "never", "very", "much", "many",
+        "develop", "shall", "might", "already", "still", "never", "very", "much", "many",
         // Common nouns
         "thing", "man", "woman", "child", "world", "life", "hand", "part", "place", "case", "week", "company",
         "system", "program", "question", "government", "number", "night", "point", "home", "water", "room",
@@ -72,10 +70,10 @@ class VoskSpeechRecognizer(private val context: Context) {
         "another", "such", "possible", "quite", "hard", "nice", "beautiful", "amazing", "wonderful",
         // Common adverbs & connectors
         "here", "too", "again", "once", "really", "actually", "always", "often", "sometimes", "usually",
-        "maybe", "perhaps", "please", "yes", "yeah", "okay", "ok", "right", "sorry", "hello", "hi",
-        "thanks", "thank", "welcome", "goodbye", "bye", "enough", "almost", "away", "off", "down",
+        "maybe", "perhaps", "please", "yes", "yeah", "okay", "sorry", "hello",
+        "thanks", "thank", "welcome", "goodbye", "enough", "almost", "away", "down",
         "where", "why", "before", "between", "under", "since", "without", "however", "though",
-        "through", "while", "against", "within", "along", "above", "near", "until", "yet",
+        "through", "while", "against", "within", "along", "above", "near", "until",
         // Media & tech
         "video", "audio", "phone", "camera", "screen", "channel", "subscribe", "watch", "share",
         "record", "recording", "app", "features", "translate", "translation", "online", "internet",
@@ -88,9 +86,8 @@ class VoskSpeechRecognizer(private val context: Context) {
     )
 
     // Expanded high-frequency Hindi Devanagari dictionary (~500 words)
-    // Covers: postpositions, pronouns, verbs (all common forms), nouns, adjectives, adverbs, conjunctions
     private val hindiVocabulary = setOf(
-        // Postpositions & particles (extremely high frequency)
+        // Postpositions & particles
         "है", "हैं", "था", "थी", "थे", "होगा", "होगी", "होता", "होती", "होते",
         "की", "के", "का", "में", "से", "को", "पर", "ने", "तक", "वाला", "वाली", "वाले",
         // Pronouns
@@ -110,13 +107,13 @@ class VoskSpeechRecognizer(private val context: Context) {
         "भी", "ही", "बस", "सिर्फ", "केवल", "बल्कि", "चाहे", "हालांकि", "जबकि",
         // Negation & affirmation
         "नहीं", "ना", "न", "मत", "हाँ", "हां", "जी", "ठीक", "अच्छा", "बिल्कुल", "ज़रूर", "जरूर",
-        // Common verbs (base + frequent inflected forms)
+        // Common verbs
         "करना", "करता", "करती", "करते", "करो", "किया", "करें", "करेंगे", "करूँगा", "करूंगा",
         "होना", "हूँ", "हूं", "हो", "हुआ", "हुई", "हुए",
-        "जाना", "जाता", "जाती", "जाते", "जाओ", "गया", "गयी", "गई", "गए", "जाएगा", "जाएंगे",
-        "आना", "आता", "आती", "आते", "आओ", "आया", "आई", "आए", "आएगा", "आयेगा",
-        "देना", "देता", "देती", "देते", "दो", "दिया", "दी", "दें", "देंगे",
-        "लेना", "लेता", "लेती", "लेते", "लो", "लिया", "ली", "लें", "लेंगे",
+        "जाना", "जाता", "जाती", "जाते", "जाओ", "गया", "गई", "गए", "जाएं",
+        "आना", "आता", "आती", "आते", "आओ", "आया", "आई", "आए", "आइए", "आएं",
+        "देना", "देता", "देती", "देते", "दो", "दिया", "दी", "दिए", "दें", "दीजिए",
+        "लेना", "लेता", "लेती", "लेते", "लो", "लिया", "ली", "लिए", "लें", "लीजिए",
         "कहना", "कहता", "कहती", "कहते", "कहो", "कहा", "कहें", "कहेंगे",
         "बोलना", "बोलता", "बोलती", "बोलते", "बोलो", "बोला", "बोली", "बोले",
         "देखना", "देखता", "देखती", "देखते", "देखो", "देखा", "देखी", "देखें", "देखिए",
@@ -237,7 +234,7 @@ class VoskSpeechRecognizer(private val context: Context) {
 
     /**
      * Probes the first 30 seconds of audio against both Hindi and English models
-     * using acoustic confidence combined with vocabulary dictionary validation.
+     * using substantive acoustic confidence and multi-syllable dictionary validation.
      */
     suspend fun probeLanguage(pcm: ShortArray): Language = withContext(Dispatchers.IO) {
         val mHi = hiModel ?: return@withContext Language.HINDI
@@ -259,11 +256,12 @@ class VoskSpeechRecognizer(private val context: Context) {
         val hiValidityRatio = if (hiWords.isNotEmpty()) hiValidCount.toFloat() / hiWords.size else 0f
         val hiAuthenticScore = hiScore * hiValidityRatio
 
-        // 2. Probe English model
+        // 2. Probe English model (requiring substantive 3+ letter words to avoid false positives)
         var enWords = emptyList<WordInfo>()
         var enAvgConf = 0.0
         var enScore = 0.0f
-        var enValidCount = 0
+        var enValidSubstantiveCount = 0
+        var enSubstantive4PlusCount = 0
         var enValidityRatio = 0f
         var enAuthenticScore = 0.0f
         val mEn = enModel
@@ -272,40 +270,44 @@ class VoskSpeechRecognizer(private val context: Context) {
             enAvgConf = if (enWords.isNotEmpty()) enWords.map { it.confidence }.average() else 0.0
             enScore = (enAvgConf * (enWords.size / durationSec)).toFloat()
 
-            enValidCount = enWords.count { wordInfo ->
+            enValidSubstantiveCount = enWords.count { wordInfo ->
                 val norm = wordInfo.word.trim().lowercase().replace(Regex("[!?,.–—\\-]"), "")
-                norm.length >= 2 && englishVocabulary.contains(norm)
+                norm.length >= 3 && englishSubstantiveVocabulary.contains(norm)
             }
-            enValidityRatio = if (enWords.isNotEmpty()) enValidCount.toFloat() / enWords.size else 0f
+            enSubstantive4PlusCount = enWords.count { wordInfo ->
+                val norm = wordInfo.word.trim().lowercase().replace(Regex("[!?,.–—\\-]"), "")
+                norm.length >= 4 && englishSubstantiveVocabulary.contains(norm)
+            }
+            enValidityRatio = if (enWords.isNotEmpty()) enValidSubstantiveCount.toFloat() / enWords.size else 0f
             enAuthenticScore = enScore * enValidityRatio
         }
 
         DiagnosticLogger.log(TAG,
-            "REAL ACOUSTIC STT DUAL-PROBE & VOCABULARY VALIDATION (Sample: ${"%.1f".format(durationSec)}s):\n" +
+            "REAL ACOUSTIC STT DUAL-PROBE & SUBSTANTIVE VOCAB VALIDATION (${"%.1f".format(durationSec)}s):\n" +
             "   Hindi model probe:   ${hiWords.size} words (${hiValidCount} valid dict, ${"%.1f".format(hiValidityRatio*100)}%), avgConf=${"%.2f".format(hiAvgConf)} -> HINDI authenticScore=${"%.3f".format(hiAuthenticScore)}\n" +
-            "   English model probe: ${enWords.size} words (${enValidCount} valid dict, ${"%.1f".format(enValidityRatio*100)}%), avgConf=${"%.2f".format(enAvgConf)} -> ENGLISH authenticScore=${"%.3f".format(enAuthenticScore)}"
+            "   English model probe: ${enWords.size} words (${enValidSubstantiveCount} valid 3+ char dict, ${enSubstantive4PlusCount} 4+ char, ${"%.1f".format(enValidityRatio*100)}%), avgConf=${"%.2f".format(enAvgConf)} -> ENGLISH authenticScore=${"%.3f".format(enAuthenticScore)}"
         )
 
+        val isAuthenticHindi = (hiAuthenticScore >= 0.030f && hiValidityRatio >= 0.16f && hiValidCount >= 3) ||
+                               (hiValidityRatio >= 0.25f && hiValidCount >= 2)
+
+        val isAuthenticEnglish = mEn != null &&
+                                 enAuthenticScore >= 0.065f &&
+                                 enValidityRatio >= 0.28f &&
+                                 enSubstantive4PlusCount >= 2 &&
+                                 enValidSubstantiveCount >= 3
+
         val detected = when {
-            // Strong Hindi signal: decent dictionary match AND outscores English
-            hiAuthenticScore >= 0.03f && hiValidityRatio >= 0.15f && hiAuthenticScore > enAuthenticScore * 0.9f -> Language.HINDI
-
-            // Strong English signal: high dictionary match AND clearly outscores Hindi
-            mEn != null && enAuthenticScore >= 0.05f && enValidityRatio >= 0.25f && enAuthenticScore > hiAuthenticScore * 1.5f -> Language.ENGLISH
-
-            // Hindi wins on relative comparison when English has very low validity (< 12%)
-            hiValidityRatio >= 0.10f && enValidityRatio < 0.12f -> Language.HINDI
-
-            // Both models failed vocabulary validity check (< 10% real dictionary words) -> TELUGU by elimination
-            enValidityRatio < 0.10f && hiValidityRatio < 0.10f -> Language.TELUGU
-
-            // Fallback: prefer whichever has higher authentic score, with English needing stronger evidence
-            hiAuthenticScore >= enAuthenticScore -> Language.HINDI
-            mEn != null && enAuthenticScore > hiAuthenticScore && enValidityRatio >= 0.20f -> Language.ENGLISH
+            isAuthenticHindi && !isAuthenticEnglish -> Language.HINDI
+            isAuthenticEnglish && !isAuthenticHindi -> Language.ENGLISH
+            isAuthenticHindi && isAuthenticEnglish -> {
+                if (hiAuthenticScore >= enAuthenticScore) Language.HINDI else Language.ENGLISH
+            }
+            // If neither Hindi nor English is authentic, speech is Dravidian / Non-Hindi / Non-English -> TELUGU!
             else -> Language.TELUGU
         }
 
-        DiagnosticLogger.log(TAG, "▶ PROBED SOURCE LANGUAGE DETECTED: $detected (Validities: EN=${"%.0f".format(enValidityRatio*100)}%, HI=${"%.0f".format(hiValidityRatio*100)}%)")
+        DiagnosticLogger.log(TAG, "▶ PROBED SOURCE LANGUAGE DETECTED: $detected (Authentic: HI=$isAuthenticHindi, EN=$isAuthenticEnglish)")
         detected
     }
 
@@ -338,45 +340,55 @@ class VoskSpeechRecognizer(private val context: Context) {
     private fun runVoskPass(m: Model, pcm: ShortArray): List<WordInfo> {
         val sampleRate = 16_000f
         val chunkSize = 4096
-        val rec = Recognizer(m, sampleRate)
-        rec.setWords(true)
+        val recognizer = Recognizer(m, sampleRate)
+        recognizer.setWords(true)
 
         val words = mutableListOf<WordInfo>()
-        var chunkStart = 0
+        var offset = 0
 
-        while (chunkStart < pcm.size) {
-            val chunkEnd = (chunkStart + chunkSize).coerceAtMost(pcm.size)
-            val chunk = pcm.copyOfRange(chunkStart, chunkEnd)
-            if (rec.acceptWaveForm(chunk, chunk.size)) {
-                words.addAll(extractWordsFromResult(rec.result))
+        while (offset < pcm.size) {
+            val end = (offset + chunkSize).coerceAtMost(pcm.size)
+            val chunk = pcm.copyOfRange(offset, end)
+            if (recognizer.acceptWaveForm(chunk, chunk.size)) {
+                val resJson = recognizer.result
+                words.addAll(parseWordInfos(resJson))
             }
-            chunkStart = chunkEnd
+            offset = end
         }
-        words.addAll(extractWordsFromResult(rec.finalResult))
-        rec.close()
+
+        val finalJson = recognizer.finalResult
+        words.addAll(parseWordInfos(finalJson))
+        recognizer.close()
+
         return words
     }
 
-    private fun extractWordsFromResult(json: String): List<WordInfo> {
+    private fun parseWordInfos(jsonStr: String): List<WordInfo> {
         val words = mutableListOf<WordInfo>()
         try {
-            val obj = JSONObject(json)
-            val wordsArr = obj.optJSONArray("result") ?: return emptyList()
-
-            for (i in 0 until wordsArr.length()) {
-                val item = wordsArr.getJSONObject(i)
-                val wordStr = item.optString("word", "").trim()
-                if (wordStr.isNotBlank()) {
-                    val startSec = item.getDouble("start")
-                    val endSec = item.getDouble("end")
+            val obj = JSONObject(jsonStr)
+            if (obj.has("result")) {
+                val array = obj.getJSONArray("result")
+                for (i in 0 until array.length()) {
+                    val item = array.getJSONObject(i)
+                    val word = item.optString("word", "").trim()
+                    val startSec = item.optDouble("start", 0.0)
+                    val endSec = item.optDouble("end", 0.0)
                     val conf = item.optDouble("conf", 1.0)
-                    val startMs = (startSec * 1000.0).toLong()
-                    val endMs = (endSec * 1000.0).toLong()
-                    words.add(WordInfo(wordStr, startMs, endMs, conf))
+                    if (word.isNotBlank()) {
+                        words.add(
+                            WordInfo(
+                                word = word,
+                                startMs = (startSec * 1000).toLong(),
+                                endMs = (endSec * 1000).toLong(),
+                                confidence = conf
+                            )
+                        )
+                    }
                 }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Error parsing Vosk result JSON", e)
+            Log.w(TAG, "Failed to parse Vosk JSON result: ${e.localizedMessage}")
         }
         return words
     }
@@ -432,7 +444,8 @@ class VoskSpeechRecognizer(private val context: Context) {
         return TranslationSegment(
             startMs = startMs,
             endMs = endMs,
-            hindi = text
+            hindi = text,
+            sourceText = text
         )
     }
 
@@ -450,12 +463,18 @@ class VoskSpeechRecognizer(private val context: Context) {
             ZipInputStream(stream).use { zip ->
                 var entry = zip.nextEntry
                 while (entry != null) {
-                    val target = File(destDir, entry.name)
+                    val file = File(destDir, entry.name)
                     if (entry.isDirectory) {
-                        target.mkdirs()
+                        file.mkdirs()
                     } else {
-                        target.parentFile?.mkdirs()
-                        FileOutputStream(target).use { zip.copyTo(it) }
+                        file.parentFile?.mkdirs()
+                        FileOutputStream(file).use { out ->
+                            val buffer = ByteArray(8192)
+                            var read: Int
+                            while (zip.read(buffer).also { read = it } != -1) {
+                                out.write(buffer, 0, read)
+                            }
+                        }
                     }
                     zip.closeEntry()
                     entry = zip.nextEntry

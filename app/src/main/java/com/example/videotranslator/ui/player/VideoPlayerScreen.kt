@@ -151,11 +151,14 @@ fun VideoPlayerScreen(
 
             Spacer(Modifier.height(20.dp))
 
+            val isAllModelReady by viewModel.isAllModelReady.collectAsStateWithLifecycle()
+
             if (videoUri == null) {
                 CleanPickerCard(
                     onPick = { videoPicker.launch("video/*") },
                     onOpenLibrary = { showLibrarySheet = true },
                     libraryCount = libraryRuns.size,
+                    isAllModelReady = isAllModelReady,
                     detectionMode = detectionMode,
                     onDetectionModeChanged = { mode ->
                         detectionMode = mode
@@ -346,12 +349,48 @@ private fun CleanPickerCard(
     onPick: () -> Unit,
     onOpenLibrary: () -> Unit,
     libraryCount: Int,
+    isAllModelReady: Boolean,
     detectionMode: String,
     onDetectionModeChanged: (String) -> Unit,
     manualLanguage: Language,
     onManualLanguageChanged: (Language) -> Unit
 ) {
     Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+        // ── 0. AI Status Indicator ──
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 2.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(if (isAllModelReady) SuccessGreen.copy(alpha = 0.08f) else Gold.copy(alpha = 0.08f))
+                .border(1.dp, if (isAllModelReady) SuccessGreen.copy(alpha = 0.25f) else Gold.copy(alpha = 0.25f), RoundedCornerShape(8.dp))
+                .padding(horizontal = 12.dp, vertical = 6.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(7.dp)
+                        .clip(CircleShape)
+                        .background(if (isAllModelReady) SuccessGreen else Gold)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (isAllModelReady) "100% On-Device AI Models Ready • Zero Cloud"
+                    else "Initializing On-Device Multilingual Models in Background...",
+                    color = if (isAllModelReady) SuccessGreen else GoldLight,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = 0.3.sp
+                )
+            }
+        }
+
+        Spacer(Modifier.height(6.dp))
+
         // ── 1. Detection Mode Toggle ──
         SurfaceCard {
             Text(

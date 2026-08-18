@@ -125,6 +125,8 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
     private val _manualSourceLanguage = MutableStateFlow<Language?>(null)
     val manualSourceLanguage: StateFlow<Language?> = _manualSourceLanguage.asStateFlow()
 
+    val isAllModelReady: StateFlow<Boolean> = modelManager.isAllReady
+
     private var pipelineJob: Job? = null
     private var ttsPollingJob: Job? = null
     private var prewarmJob: Job? = null
