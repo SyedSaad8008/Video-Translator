@@ -41,6 +41,7 @@ data class VoiceAvailabilityStatus(
  */
 class TtsManager(private val context: Context) {
 
+    private val piperEngine = PiperTtsEngine(context)
     private var tts: TextToSpeech? = null
     @Volatile var isReady: Boolean = false
         private set

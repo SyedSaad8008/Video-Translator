@@ -138,7 +138,7 @@ class GoogleSttManager {
                 endMs   = offsetMs + (pcmDurationMs(text))
             }
 
-            segments.add(TranslationSegment(startMs, endMs, text))
+            segments.add(TranslationSegment(startMs = startMs, endMs = endMs, hindi = text, sourceText = text))
         }
         return segments
     }

@@ -9,7 +9,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import com.example.videotranslator.audio.AudioExtractor
-import com.example.videotranslator.audio.GenderDetector
+import com.example.videotranslator.audio.AudioSynchronizer
 import com.example.videotranslator.audio.InstrumentalPlayer
 import com.example.videotranslator.audio.NoiseSuppressor
 import com.example.videotranslator.audio.SegmentAudioPlayer
@@ -19,9 +19,13 @@ import com.example.videotranslator.library.VideoRun
 import com.example.videotranslator.model.Gender
 import com.example.videotranslator.model.Language
 import com.example.videotranslator.model.ProcessingState
+import com.example.videotranslator.model.Speaker
 import com.example.videotranslator.model.TranslationSegment
-import com.example.videotranslator.stt.VoskSpeechRecognizer
-import com.example.videotranslator.stt.WhisperSpeechRecognizer
+import com.example.videotranslator.model.VoiceMode
+import com.example.videotranslator.models.ModelManager
+import com.example.videotranslator.speaker.SpeakerManager
+import com.example.videotranslator.speaker.VoiceGenderClassifier
+import com.example.videotranslator.speech.WhisperRecognizer
 import com.example.videotranslator.translation.TranslationManager
 import com.example.videotranslator.tts.TtsManager
 import com.example.videotranslator.tts.VoiceAvailabilityStatus
@@ -41,29 +45,27 @@ import java.util.Locale
 import java.util.UUID
 
 private const val TAG = "VideoPlayerVM"
-
-// ── Polling ────────────────────────────────────────────────────────────────────
-private const val POLL_INTERVAL_MS     = 100L
+private const val POLL_INTERVAL_MS = 100L
 private const val TRIGGER_TOLERANCE_MS = 200L
-
-// ── Volume levels ──────────────────────────────────────────────────────────────
-private const val EXOPLAYER_FULL  = 1.0f
+private const val EXOPLAYER_FULL = 1.0f
 private const val EXOPLAYER_MUTED = 0.0f
 
 class VideoPlayerViewModel(application: Application) : AndroidViewModel(application) {
 
     // ── Dependencies ──────────────────────────────────────────────────────────
-    private val cache              = SegmentCache(application)
-    private val libraryRepo        = VideoLibraryRepository(application)
-    private val audioExtractor     = AudioExtractor(application)
-    private val noiseSuppressor    = NoiseSuppressor()
-    private val voskRecognizer     = VoskSpeechRecognizer(application)
-    private val whisperRecognizer  = WhisperSpeechRecognizer(application)
-    private val translationManager = TranslationManager()
-    private val genderDetector     = GenderDetector()
-    val ttsManager                 = TtsManager(application)
+    val modelManager           = ModelManager(application, viewModelScope)
+    private val cache          = SegmentCache(application)
+    private val libraryRepo    = VideoLibraryRepository(application)
+    private val audioExtractor = AudioExtractor(application)
+    private val noiseSuppressor = NoiseSuppressor()
+    private val whisperRecognizer = WhisperRecognizer(application)
+    private val translationManager = TranslationManager(application)
+    private val speakerManager = SpeakerManager()
+    private val genderClassifier = VoiceGenderClassifier()
+    private val audioSynchronizer = AudioSynchronizer()
+    val ttsManager             = TtsManager(application)
     private val segmentAudioPlayer = SegmentAudioPlayer()
-    private val instrumental       = InstrumentalPlayer(viewModelScope)
+    private val instrumental   = InstrumentalPlayer(viewModelScope)
 
     // ── State Flows ───────────────────────────────────────────────────────────
     val exoPlayer: ExoPlayer = ExoPlayer.Builder(application).build()
@@ -71,11 +73,23 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
     private val _currentLanguage = MutableStateFlow(Language.HINDI)
     val currentLanguage: StateFlow<Language> = _currentLanguage.asStateFlow()
 
+    private val _targetLanguage = MutableStateFlow(Language.ENGLISH)
+    val targetLanguage: StateFlow<Language> = _targetLanguage.asStateFlow()
+
     private val _processingState = MutableStateFlow<ProcessingState>(ProcessingState.Idle)
     val processingState: StateFlow<ProcessingState> = _processingState.asStateFlow()
 
     private val _detectedGender = MutableStateFlow(Gender.MALE)
     val detectedGender: StateFlow<Gender> = _detectedGender.asStateFlow()
+
+    private val _voiceMode = MutableStateFlow(VoiceMode.GENDER_MATCHED)
+    val voiceMode: StateFlow<VoiceMode> = _voiceMode.asStateFlow()
+
+    private val _lowConfFallbackGender = MutableStateFlow(Gender.MALE)
+    val lowConfFallbackGender: StateFlow<Gender> = _lowConfFallbackGender.asStateFlow()
+
+    private val _speakers = MutableStateFlow<List<Speaker>>(emptyList())
+    val speakers: StateFlow<List<Speaker>> = _speakers.asStateFlow()
 
     private val _missingVoiceWarning = MutableStateFlow(false)
     val missingVoiceWarning: StateFlow<Boolean> = _missingVoiceWarning.asStateFlow()
@@ -107,7 +121,7 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
     private val _detectedSourceLanguage = MutableStateFlow(Language.HINDI)
     val detectedSourceLanguage: StateFlow<Language> = _detectedSourceLanguage.asStateFlow()
 
-    /** Null = auto-detect, non-null = user manually selected the source language. */
+    /** Null = auto-detect, non-null = user manually selected source language. */
     private val _manualSourceLanguage = MutableStateFlow<Language?>(null)
     val manualSourceLanguage: StateFlow<Language?> = _manualSourceLanguage.asStateFlow()
 
@@ -144,20 +158,14 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
             }
         })
 
-        // Pre-warm Vosk & Whisper models & check ML Kit on app start asynchronously
+        // Pre-warm models asynchronously
         prewarmJob = viewModelScope.launch {
             try {
-                val voskLoad    = launch { voskRecognizer.loadModel() }
-                val whisperLoad = launch { whisperRecognizer.loadModel() }
-                val mlKitLoad   = launch {
-                    try { translationManager.downloadModels() }
-                    catch (e: Exception) { Log.w(TAG, "ML Kit prewarm failed: ${e.message}") }
-                }
-                voskLoad.join()
-                whisperLoad.join()
-                mlKitLoad.join()
-                DiagnosticLogger.log(TAG, "Pre-warm complete ✓")
+                whisperRecognizer.loadModel()
+                translationManager.downloadModels()
+                DiagnosticLogger.log(TAG, "AI Models pre-warm complete ✓")
             } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { Log.w(TAG, "Pre-warm notice: ${e.message}") }
         }
     }
 
@@ -167,17 +175,30 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    // ── Manual mode ────────────────────────────────────────────────────────────
     fun setManualSourceLanguage(lang: Language?) {
         _manualSourceLanguage.value = lang
-        DiagnosticLogger.log(TAG, "Manual source language set to: ${lang?.name ?: "AUTO"}")
+        DiagnosticLogger.log(TAG, "Source language configured: ${lang?.displayName ?: "Auto Detect"}")
     }
 
-    // ── Video picking (Creates a brand-new unique run ID) ─────────────────────
+    fun setTargetLanguage(lang: Language) {
+        if (_manualSourceLanguage.value != lang) {
+            _targetLanguage.value = lang
+        }
+    }
+
+    fun setVoiceMode(mode: VoiceMode) {
+        _voiceMode.value = mode
+    }
+
+    fun setLowConfFallback(gender: Gender) {
+        _lowConfFallbackGender.value = gender
+    }
+
+    // ── Video Picking & Run Creation ──────────────────────────────────────────
     fun onVideoPicked(uri: Uri) {
         val newRunId = UUID.randomUUID().toString()
         val title = uri.lastPathSegment?.replace(Regex("[^a-zA-Z0-9_.-]"), " ")?.take(30) ?: "Video Run"
-        DiagnosticLogger.log(TAG, "New video picked: $uri (RunId: $newRunId, ManualLang: ${_manualSourceLanguage.value?.name ?: "AUTO"})")
+        DiagnosticLogger.log(TAG, "New video selected: $uri (RunId: $newRunId)")
 
         val newRun = VideoRun(
             runId = newRunId,
@@ -189,11 +210,7 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
         libraryRepo.saveRun(newRun)
         refreshLibrary()
 
-        pipelineJob?.cancel()
-        ttsPollingJob?.cancel()
-        segmentAudioPlayer.stop()
-        instrumental.stop()
-        lastSpokenIndex = -1
+        cancelPipeline()
 
         _videoUri.value = uri
         _currentRunId.value = newRunId
@@ -206,14 +223,9 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
         pipelineJob = viewModelScope.launch { runPipeline(uri, newRunId) }
     }
 
-    // ── Load an existing run from persistent library ──────────────────────────
     fun loadPastRun(run: VideoRun) {
         DiagnosticLogger.log(TAG, "Loading past run from library: ${run.videoTitle} (${run.runId})")
-        pipelineJob?.cancel()
-        ttsPollingJob?.cancel()
-        segmentAudioPlayer.stop()
-        instrumental.stop()
-        lastSpokenIndex = -1
+        cancelPipeline()
 
         val uri = Uri.parse(run.uriString)
         _videoUri.value = uri
@@ -228,7 +240,7 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
             if (cachedSegs != null && cachedSegs.isNotEmpty()) {
                 val instrFile = cache.instrumentalFileForRun(run.runId)
                 if (instrFile.exists()) instrumental.loadFromFile(instrFile)
-                
+
                 _detectedGender.value = if (run.detectedGender == "FEMALE") Gender.FEMALE else Gender.MALE
                 _detectedSourceLanguage.value = when (run.detectedSourceLanguage) {
                     "TELUGU"  -> Language.TELUGU
@@ -237,9 +249,8 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 }
                 _processingState.value = ProcessingState.Ready
                 startTtsPolling()
-                DiagnosticLogger.log(TAG, "Past run [${run.runId}] loaded instantly from cache ✓")
+                DiagnosticLogger.log(TAG, "Past run [${run.runId}] loaded from cache ✓")
             } else {
-                // If files missing, re-run pipeline for this runId
                 runPipeline(uri, run.runId)
             }
         }
@@ -249,10 +260,7 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
         libraryRepo.deleteRun(runId)
         refreshLibrary()
         if (_currentRunId.value == runId) {
-            pipelineJob?.cancel()
-            ttsPollingJob?.cancel()
-            segmentAudioPlayer.stop()
-            instrumental.stop()
+            cancelPipeline()
             exoPlayer.stop()
             _videoUri.value = null
             _currentRunId.value = null
@@ -260,242 +268,190 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
+    fun cancelPipeline() {
+        pipelineJob?.cancel()
+        ttsPollingJob?.cancel()
+        segmentAudioPlayer.stop()
+        instrumental.stop()
+        lastSpokenIndex = -1
+    }
+
     fun retryPipeline() {
         val uri = _videoUri.value ?: return
         val runId = _currentRunId.value ?: return
-        DiagnosticLogger.log(TAG, "User triggered retry for run [$runId]: $uri")
-        pipelineJob?.cancel()
+        DiagnosticLogger.log(TAG, "Retrying pipeline for run [$runId]")
+        cancelPipeline()
         pipelineJob = viewModelScope.launch { runPipeline(uri, runId) }
     }
 
-    // ── Pipeline Execution ────────────────────────────────────────────────────
+    // ── Full On-Device AI Pipeline Execution ─────────────────────────────────
     private suspend fun runPipeline(uri: Uri, runId: String) = withContext(Dispatchers.Default) {
         val pipelineStart = System.currentTimeMillis()
-        DiagnosticLogger.log(TAG, "Starting full pipeline execution for run [$runId]: $uri")
-        try {
-            // ── 1. Wait for pre-warm ──────────────────────────────────
-            _processingState.value = ProcessingState.Loading("Initializing AI models…", 0.05f)
-            prewarmJob?.join()
+        DiagnosticLogger.log(TAG, "Starting 100% Offline AI Video Translation Pipeline for run [$runId]")
 
-            // ── 2. Extract audio (mono + instrumental) ────────────────
-            _processingState.value = ProcessingState.Loading("Extracting audio from video…", 0.15f)
-            val monoFile         = cache.pcmFileForRun(runId)
+        try {
+            // ── Stage 1: Audio Extraction & Targeted DSP Preprocessing ──
+            _processingState.value = ProcessingState.Loading("1/7 Extracting audio & applying targeted DSP noise filter…", 0.12f, 1, 7)
+            val monoFile = cache.pcmFileForRun(runId)
             val instrumentalFile = cache.instrumentalFileForRun(runId)
 
-            val result = if (monoFile.exists()) {
-                val mono  = audioExtractor.loadMonoFromCache(monoFile)
-                val instr = if (instrumentalFile.exists())
-                    audioExtractor.loadInstrumentalFromCache(instrumentalFile) else null
+            val extractionResult = if (monoFile.exists()) {
+                val mono = audioExtractor.loadMonoFromCache(monoFile)
+                val instr = if (instrumentalFile.exists()) audioExtractor.loadInstrumentalFromCache(instrumentalFile) else null
                 AudioExtractor.ExtractionResult(mono, instr)
             } else {
                 audioExtractor.extractToFiles(uri, monoFile, instrumentalFile)
             }
 
-            if (result.instrumental != null) instrumental.loadFromFile(instrumentalFile)
+            if (extractionResult.instrumental != null) instrumental.loadFromFile(instrumentalFile)
 
-            // ── 2b. Multi-Segment Targeted DSP Noise Suppression ─────────
-            _processingState.value = ProcessingState.Loading("Applying targeted DSP noise suppression (Fan, Wind HPF, Horn)…", 0.22f)
-            val noiseResult = noiseSuppressor.suppressNoiseWithResult(result.mono)
+            val noiseResult = noiseSuppressor.suppressNoiseWithResult(extractionResult.mono)
             val cleanedMono = noiseResult.cleanedPcm
             val transientMask = noiseResult.transientMask
 
-            // ── 2c. Global Voice Gender Detection (Baseline) ──────────────
-            _processingState.value = ProcessingState.Loading("Analyzing global audio pitch…", 0.28f)
-            val globalGenderResult = genderDetector.detectGender(
-                pcmMono = cleanedMono,
-                transientMask = transientMask
-            )
-            _detectedGender.value = globalGenderResult.gender
-            DiagnosticLogger.log(TAG, "Global Audio Gender Baseline: ${globalGenderResult.gender} (Median F0 = ${"%.1f".format(globalGenderResult.medianF0)} Hz)")
+            // ── Stage 2: Language Identification & Whisper Speech-to-Text ──
+            _processingState.value = ProcessingState.Loading("2/7 Identifying language & transcribing speech with Whisper…", 0.28f, 2, 7)
 
-            // ── 3. Language Detection (Manual Override or Acoustic Probe) ───
             val manualLang = _manualSourceLanguage.value
-            val sourceLang: Language
-            if (manualLang != null) {
-                // Manual mode — skip all detection, use user's selection
-                sourceLang = manualLang
-                _processingState.value = ProcessingState.Loading("Using manually selected language: ${sourceLang.displayName}…", 0.38f)
-                DiagnosticLogger.log(TAG, "STAGE 3 - MANUAL MODE: User selected source language = $sourceLang (skipping auto-detection)")
+            val sourceLang = if (manualLang != null) {
+                DiagnosticLogger.log(TAG, "STAGE 2 - Manual source language selected: $manualLang")
+                manualLang
             } else {
-                // Auto mode — run Whisper + Vosk dual-probe
-                _processingState.value = ProcessingState.Loading("Probing acoustic speech (Hindi vs English vs Telugu)…", 0.38f)
-                val whisperResult = whisperRecognizer.detectLanguageNative(cleanedMono)
-                sourceLang = if (whisperResult.confidence >= 0.70f && whisperResult.language == Language.TELUGU) {
-                    Language.TELUGU
-                } else {
-                    voskRecognizer.probeLanguage(cleanedMono)
-                }
-                DiagnosticLogger.log(TAG, "STAGE 3 - AUTO MODE: Probed source language = $sourceLang (Whisper: ${whisperResult.language}, conf=${"%.2f".format(whisperResult.confidence)})")
+                whisperRecognizer.probeLanguage(cleanedMono)
             }
             _detectedSourceLanguage.value = sourceLang
             _currentLanguage.value = sourceLang
             applyVolumeForLanguage(sourceLang)
 
-            // ── 4. Full Transcribe (Vosk) on Cleaned Audio for Detected Language ──
-            _processingState.value = ProcessingState.Loading("Transcribing speech for $sourceLang (High-Precision STT)…", 0.48f)
-            val rawSegments = voskRecognizer.recognise(cleanedMono, sourceLang)
-            DiagnosticLogger.log(TAG, "Vosk recognized ${rawSegments.size} segments for $sourceLang")
-
+            val rawSegments = whisperRecognizer.recognize(cleanedMono, sourceLang)
             if (rawSegments.isEmpty()) {
-                val msg = "No spoken speech detected in this video. Please select a video with clear spoken speech."
-                DiagnosticLogger.log(TAG, "Pipeline Stopped: $msg")
-                libraryRepo.getRun(runId)?.copy(status = "Error")?.let { libraryRepo.saveRun(it) }
-                refreshLibrary()
+                val msg = "No speech detected in this video. Please select a video containing spoken dialogue."
+                DiagnosticLogger.log(TAG, msg)
                 _processingState.value = ProcessingState.Error(msg)
                 return@withContext
             }
 
-            // ── 5. Download ML Kit translation & verification models ─────
-            _processingState.value = ProcessingState.Loading("Loading neural translation models…", 0.62f)
-            val modelResult = translationManager.downloadModels()
-            if (modelResult.isFailure) {
-                val err = modelResult.exceptionOrNull()?.message ?: "Translation model download failed."
-                DiagnosticLogger.log(TAG, "Pipeline Error: $err")
-                libraryRepo.getRun(runId)?.copy(status = "Error")?.let { libraryRepo.saveRun(it) }
-                refreshLibrary()
-                _processingState.value = ProcessingState.Error(err)
-                return@withContext
-            }
+            // ── Stage 3: Speaker Tracking & Multi-Signal Gender Classification ──
+            _processingState.value = ProcessingState.Loading("3/7 Tracking speakers & analyzing voice characteristics…", 0.45f, 3, 7)
 
-            // ── 6. Contextual Translation & Back-Translation Verification ─
-            _processingState.value = ProcessingState.Loading("Translating & verifying (${sourceLang} → other languages)…", 0.72f)
-            val translatedSegments = translationManager.translate(rawSegments, sourceLang)
+            val genderDetections = mutableListOf<VoiceGenderClassifier.ClassificationResult>()
+            val f0Estimates = mutableListOf<Float>()
 
-            // ── 5b. Phase 1: Multi-Signal Ensemble Gender Analysis (all segments) ─
-            val totalSegs = translatedSegments.size.coerceAtLeast(1)
-            var runningGender = globalGenderResult.gender
-
-            _processingState.value = ProcessingState.Loading(
-                "Analyzing speaker gender (multi-signal ensemble)…", 0.74f
-            )
-
-            val rawDetections = mutableListOf<GenderDetector.DetectionResult>()
-            for (idx in translatedSegments.indices) {
-                val seg = translatedSegments[idx]
+            for (seg in rawSegments) {
                 val startSample = ((seg.startMs * 16000) / 1000).toInt().coerceIn(0, cleanedMono.size)
                 val endSample   = ((seg.endMs * 16000) / 1000).toInt().coerceIn(startSample, cleanedMono.size)
                 val segPcm      = if (endSample > startSample) cleanedMono.copyOfRange(startSample, endSample) else ShortArray(0)
-                val prevEndMs   = if (idx > 0) translatedSegments[idx - 1].endMs else 0L
 
-                val res = genderDetector.detectGender(
-                    pcmMono = segPcm,
-                    fallbackGender = runningGender,
-                    fullPcmMono = cleanedMono,
-                    segmentStartMs = seg.startMs,
-                    segmentEndMs = seg.endMs,
-                    previousSegmentEndMs = prevEndMs,
-                    transientMask = transientMask
-                )
-                runningGender = res.gender
-                rawDetections.add(res)
+                val res = genderClassifier.classifyVoice(segPcm, transientMask = transientMask)
+                genderDetections.add(res)
+                f0Estimates.add(res.medianF0)
             }
 
-            // ── 5c. Phase 2: Temporal Consistency Smoothing ─────────────────
-            _processingState.value = ProcessingState.Loading(
-                "Applying temporal consistency smoothing…", 0.78f
-            )
-            val smoothedDetections = genderDetector.smoothSequence(rawDetections)
+            val smoothedGenders = genderClassifier.smoothSequence(genderDetections)
+            val (speakerTrackedSegments, trackedSpeakers) = speakerManager.trackSpeakers(rawSegments, f0Estimates)
+            _speakers.value = trackedSpeakers
 
-            // Log full ensemble results for every segment
-            for (idx in translatedSegments.indices) {
-                val seg = translatedSegments[idx]
-                val raw = rawDetections[idx]
-                val sm  = smoothedDetections[idx]
-                DiagnosticLogger.log(TAG, "ENSEMBLE GENDER [$idx] (${seg.startMs}ms→${seg.endMs}ms):\n" +
-                        "   F0=${"%.1f".format(raw.medianF0)}Hz → ${raw.f0Vote}\n" +
-                        "   SC=${"%.0f".format(raw.spectralCentroid)}Hz → ${raw.scVote}\n" +
-                        "   HNR=${"%.1f".format(raw.hnr)}dB\n" +
-                        "   EnsConf=${"%.2f".format(raw.ensembleConfidence)}, Voiced=${raw.totalVoicedFrames}\n" +
-                        "   Raw=${raw.gender}${if (sm.wasSmoothed) " → SMOOTHED TO ${sm.gender}" else ""}\n" +
-                        "   Final Gender: ${sm.gender}")
-            }
+            // Determine dominant video gender
+            val maleCount = smoothedGenders.count { it.gender == Gender.MALE }
+            val femaleCount = smoothedGenders.count { it.gender == Gender.FEMALE }
+            _detectedGender.value = if (femaleCount > maleCount) Gender.FEMALE else Gender.MALE
 
-            // ── 5d. Phase 3: Duration-Matched TTS Pre-Rendering ─────────────
+            // ── Stage 4: Context-Aware NLLB-200 Neural Translation ──
+            _processingState.value = ProcessingState.Loading("4/7 Translating dialogue with NLLB-200 (${sourceLang.displayName} → other languages)…", 0.65f, 4, 7)
+            val translatedSegments = translationManager.translate(speakerTrackedSegments, sourceLang)
+
+            // ── Stage 5: Gender-Matched Voice Synthesis (Piper / Local TTS) ──
+            _processingState.value = ProcessingState.Loading("5/7 Pre-rendering gender-matched voice dubs…", 0.82f, 5, 7)
             val renderedDir = cache.renderedAudioDirForRun(runId)
-            val finalProcessedSegments = mutableListOf<TranslationSegment>()
+            val finalSegments = mutableListOf<TranslationSegment>()
+            val renderedDurations = mutableListOf<Long>()
 
-            for (idx in translatedSegments.indices) {
-                val seg = translatedSegments[idx]
-                val segmentGender = smoothedDetections[idx].gender
-                val progressStep = 0.80f + (0.16f * (idx.toFloat() / totalSegs.toFloat()))
-                _processingState.value = ProcessingState.Loading(
-                    "Pre-rendering dubbed audio (${idx + 1}/$totalSegs)…",
-                    progressStep
-                )
+            val mode = _voiceMode.value
+            val fallback = _lowConfFallbackGender.value
+
+            for ((idx, seg) in translatedSegments.withIndex()) {
+                val detectedVoiceGender = smoothedGenders[idx].gender
+                val voiceGenderToUse = when (mode) {
+                    VoiceMode.FORCE_MALE -> Gender.MALE
+                    VoiceMode.FORCE_FEMALE -> Gender.FEMALE
+                    VoiceMode.ORIGINAL_SPEAKER -> _detectedGender.value
+                    VoiceMode.GENDER_MATCHED -> if (detectedVoiceGender == Gender.UNKNOWN) fallback else detectedVoiceGender
+                }
 
                 val targetDurationMs = (seg.endMs - seg.startMs).coerceAtLeast(300L)
 
-                // Pre-render all three language dub tracks
+                // Pre-render English
                 val enFile = File(renderedDir, "seg_${idx}_en.wav")
-                ttsManager.selectVoiceForGender(Language.ENGLISH, segmentGender)
-                val enRenderedMs = ttsManager.synthesizeToFile(seg.english, enFile)
-                val enSpeedRatio = if (enRenderedMs > 0) (enRenderedMs.toFloat() / targetDurationMs).coerceIn(0.75f, 1.5f) else 1.0f
+                ttsManager.selectVoiceForGender(Language.ENGLISH, voiceGenderToUse)
+                val enMs = ttsManager.synthesizeToFile(seg.english, enFile)
+                val enRatio = if (enMs > 0) (enMs.toFloat() / targetDurationMs).coerceIn(0.75f, 1.5f) else 1.0f
 
+                // Pre-render Telugu
                 val teFile = File(renderedDir, "seg_${idx}_te.wav")
-                ttsManager.selectVoiceForGender(Language.TELUGU, segmentGender)
-                val teRenderedMs = ttsManager.synthesizeToFile(seg.telugu, teFile)
-                val teSpeedRatio = if (teRenderedMs > 0) (teRenderedMs.toFloat() / targetDurationMs).coerceIn(0.75f, 1.5f) else 1.0f
+                ttsManager.selectVoiceForGender(Language.TELUGU, voiceGenderToUse)
+                val teMs = ttsManager.synthesizeToFile(seg.telugu, teFile)
+                val teRatio = if (teMs > 0) (teMs.toFloat() / targetDurationMs).coerceIn(0.75f, 1.5f) else 1.0f
 
+                // Pre-render Hindi
                 val hiFile = File(renderedDir, "seg_${idx}_hi.wav")
-                ttsManager.selectVoiceForGender(Language.HINDI, segmentGender)
-                val hiRenderedMs = ttsManager.synthesizeToFile(seg.hindi, hiFile)
-                val hiSpeedRatio = if (hiRenderedMs > 0) (hiRenderedMs.toFloat() / targetDurationMs).coerceIn(0.75f, 1.5f) else 1.0f
+                ttsManager.selectVoiceForGender(Language.HINDI, voiceGenderToUse)
+                val hiMs = ttsManager.synthesizeToFile(seg.hindi, hiFile)
+                val hiRatio = if (hiMs > 0) (hiMs.toFloat() / targetDurationMs).coerceIn(0.75f, 1.5f) else 1.0f
 
-                finalProcessedSegments.add(
+                renderedDurations.add(enMs)
+
+                finalSegments.add(
                     seg.copy(
-                        gender = segmentGender,
+                        gender = voiceGenderToUse,
+                        voiceGender = voiceGenderToUse.name.lowercase(),
+                        genderConfidence = smoothedGenders[idx].confidence,
                         englishAudioPath = enFile.absolutePath,
-                        englishSpeedRatio = enSpeedRatio,
+                        englishSpeedRatio = enRatio,
                         teluguAudioPath = teFile.absolutePath,
-                        teluguSpeedRatio = teSpeedRatio,
+                        teluguSpeedRatio = teRatio,
                         hindiAudioPath = hiFile.absolutePath,
-                        hindiSpeedRatio = hiSpeedRatio,
+                        hindiSpeedRatio = hiRatio,
                         detectedSourceLanguage = sourceLang.name
                     )
                 )
             }
 
-            // ── 6. Cache + publish ────────────────────────────────────
-            _processingState.value = ProcessingState.Loading("Saving cached audio…", 0.98f)
-            cache.saveRun(runId, finalProcessedSegments)
+            // ── Stage 6: Audio-Video Timing Synchronization ──
+            _processingState.value = ProcessingState.Loading("6/7 Synchronizing audio timestamps & lip-sync…", 0.94f, 6, 7)
+            audioSynchronizer.synchronizeSegments(finalSegments, renderedDurations)
 
-            // Update persistent library run
+            // ── Stage 7: Caching & Library Update ──
+            _processingState.value = ProcessingState.Loading("7/7 Saving translation session to local library…", 0.98f, 7, 7)
+            cache.saveRun(runId, finalSegments)
+
             libraryRepo.getRun(runId)?.copy(
                 status = "Ready",
-                segmentCount = finalProcessedSegments.size,
-                detectedGender = globalGenderResult.gender.name,
+                segmentCount = finalSegments.size,
+                detectedGender = _detectedGender.value.name,
                 detectedSourceLanguage = sourceLang.name
             )?.let { libraryRepo.saveRun(it) }
             refreshLibrary()
 
             _processingState.value = ProcessingState.Ready
 
-            val totalPipelineMs = System.currentTimeMillis() - pipelineStart
-            DiagnosticLogger.log(TAG, "================ TOTAL PIPELINE EXECUTION TIME ================")
-            DiagnosticLogger.log(TAG, "Completed full Two-Tier pipeline in ${"%.2f".format(totalPipelineMs / 1000.0)}s for run [$runId]")
-            DiagnosticLogger.log(TAG, "================================================================")
+            val totalMs = System.currentTimeMillis() - pipelineStart
+            DiagnosticLogger.log(TAG, "Completed full 100% Offline AI Video Translation in ${"%.2f".format(totalMs / 1000.0)}s for run [$runId] ✓")
 
             startTtsPolling()
 
         } catch (e: CancellationException) {
+            DiagnosticLogger.log(TAG, "Pipeline canceled by user.")
+            _processingState.value = ProcessingState.Idle
             throw e
         } catch (e: Exception) {
-            DiagnosticLogger.log(TAG, "Pipeline Exception for run [$runId]", e)
+            DiagnosticLogger.log(TAG, "Pipeline execution error: ${e.localizedMessage}", e)
             libraryRepo.getRun(runId)?.copy(status = "Error")?.let { libraryRepo.saveRun(it) }
             refreshLibrary()
             _processingState.value = ProcessingState.Error(e.localizedMessage ?: "Unknown pipeline execution error.")
         }
     }
 
-    private fun loadInstrumentalIfAvailable(uri: Uri) {
-        val runId = _currentRunId.value
-        if (runId != null) {
-            val file = cache.instrumentalFileForRun(runId)
-            if (file.exists()) instrumental.loadFromFile(file)
-        }
-    }
-
-    // ── Language switching & Voice re-check ────────────────────────────────────
+    // ── Language Switching & Real-Time Track Synchronization ─────────────────
     fun switchLanguage(language: Language) {
         if (_currentLanguage.value == language) return
         _currentLanguage.value = language
@@ -518,26 +474,22 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
     private suspend fun applyVolumeForLanguage(lang: Language) = withContext(Dispatchers.Main) {
         val src = _detectedSourceLanguage.value
         if (lang == src) {
-            // Playing original audio — full video, mute TTS overlay
             exoPlayer.volume = EXOPLAYER_FULL
             instrumental.stop()
         } else {
-            // Playing dubbed translation — mute video, play TTS + music overlay
             exoPlayer.volume = EXOPLAYER_MUTED
             instrumental.stop()
         }
     }
 
-    // ── Real-Time Segment Audio Polling Engine ────────────────────────────────
     private fun startTtsPolling() {
         ttsPollingJob?.cancel()
         ttsPollingJob = viewModelScope.launch(Dispatchers.Main) {
             while (isActive) {
                 val currentLang = _currentLanguage.value
                 val srcLang     = _detectedSourceLanguage.value
-                val runId = _currentRunId.value
+                val runId       = _currentRunId.value
 
-                // When playing original language, ExoPlayer handles audio — no TTS overlay needed
                 if (currentLang != srcLang && exoPlayer.isPlaying && runId != null) {
                     val pos = exoPlayer.currentPosition
                     val segments = cache.loadRun(runId) ?: emptyList()
@@ -568,12 +520,11 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
     override fun onCleared() {
         super.onCleared()
-        pipelineJob?.cancel()
-        ttsPollingJob?.cancel()
+        cancelPipeline()
         exoPlayer.release()
         segmentAudioPlayer.stop()
         instrumental.release()
-        voskRecognizer.close()
+        whisperRecognizer.close()
         ttsManager.shutdown()
     }
 }

@@ -23,10 +23,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -52,9 +54,13 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.ui.PlayerView
 import com.example.videotranslator.R
 import com.example.videotranslator.library.VideoRun
+import com.example.videotranslator.model.Gender
 import com.example.videotranslator.model.Language
 import com.example.videotranslator.model.ProcessingState
+import com.example.videotranslator.model.VoiceMode
 import com.example.videotranslator.tts.VoiceAvailabilityStatus
+import com.example.videotranslator.ui.models.ModelManagerSheet
+import com.example.videotranslator.ui.settings.VoiceSettingsDialog
 import com.example.videotranslator.util.DiagnosticLogger
 
 // ─────────────────────────── Design Tokens ───────────────────────────────────
@@ -87,33 +93,28 @@ fun VideoPlayerScreen(
 ) {
     val processingState    by viewModel.processingState.collectAsStateWithLifecycle()
     val currentLanguage    by viewModel.currentLanguage.collectAsStateWithLifecycle()
+    val targetLanguage     by viewModel.targetLanguage.collectAsStateWithLifecycle()
+    val voiceMode          by viewModel.voiceMode.collectAsStateWithLifecycle()
+    val lowConfFallback    by viewModel.lowConfFallbackGender.collectAsStateWithLifecycle()
     val missingVoice       by viewModel.missingVoiceWarning.collectAsStateWithLifecycle()
     val voiceStatus        by viewModel.voiceAvailabilityStatus.collectAsStateWithLifecycle()
     val videoUri           by viewModel.videoUri.collectAsStateWithLifecycle()
     val libraryRuns        by viewModel.libraryRuns.collectAsStateWithLifecycle()
     val logText            by DiagnosticLogger.logTextFlow.collectAsStateWithLifecycle()
     val detectedSourceLang by viewModel.detectedSourceLanguage.collectAsStateWithLifecycle()
+    val manualSourceLang   by viewModel.manualSourceLanguage.collectAsStateWithLifecycle()
 
-    var showLogSheet     by remember { mutableStateOf(false) }
-    var showLibrarySheet by remember { mutableStateOf(false) }
-    var detectionMode    by remember { mutableStateOf("auto") }  // "auto" or "manual"
-    var manualLanguage   by remember { mutableStateOf(Language.HINDI) }
+    var showLogSheet      by remember { mutableStateOf(false) }
+    var showLibrarySheet  by remember { mutableStateOf(false) }
+    var showModelsSheet   by remember { mutableStateOf(false) }
+    var showVoiceSettings by remember { mutableStateOf(false) }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     val context        = LocalContext.current
 
     val videoPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.GetContent()
-    ) { uri: Uri? ->
-        uri?.let {
-            if (detectionMode == "manual") {
-                viewModel.setManualSourceLanguage(manualLanguage)
-            } else {
-                viewModel.setManualSourceLanguage(null)
-            }
-            viewModel.onVideoPicked(it)
-        }
-    }
+    ) { uri: Uri? -> uri?.let { viewModel.onVideoPicked(it) } }
 
     DisposableEffect(lifecycleOwner) {
         val obs = LifecycleEventObserver { _, event ->
@@ -143,37 +144,50 @@ fun VideoPlayerScreen(
 
             PremiumHeader(
                 onOpenDiagnostics = { showLogSheet = true },
-                onOpenLibrary = { showLibrarySheet = true }
+                onOpenLibrary = { showLibrarySheet = true },
+                onOpenModels = { showModelsSheet = true },
+                onOpenVoiceSettings = { showVoiceSettings = true }
             )
 
-            Spacer(Modifier.height(22.dp))
+            Spacer(Modifier.height(20.dp))
 
             if (videoUri == null) {
                 PickerCard(
                     onPick = { videoPicker.launch("video/*") },
                     onOpenLibrary = { showLibrarySheet = true },
                     libraryCount = libraryRuns.size,
-                    detectionMode = detectionMode,
-                    onDetectionModeChanged = { detectionMode = it },
-                    manualLanguage = manualLanguage,
-                    onManualLanguageChanged = { manualLanguage = it }
+                    sourceLanguage = manualSourceLang,
+                    onSourceLanguageChanged = viewModel::setManualSourceLanguage,
+                    targetLanguage = targetLanguage,
+                    onTargetLanguageChanged = viewModel::setTargetLanguage,
+                    voiceMode = voiceMode,
+                    onOpenVoiceSettings = { showVoiceSettings = true }
                 )
             } else {
                 VideoSurface(viewModel = viewModel)
             }
 
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(16.dp))
 
-            // Processing / Error states
-            AnimatedContent(
-                targetState = processingState,
-                transitionSpec = { fadeIn(tween(300)) togetherWith fadeOut(tween(200)) },
-                label = "state"
-            ) { state ->
-                when (state) {
-                    is ProcessingState.Loading -> ProcessingCard(state)
-                    is ProcessingState.Error   -> ErrorCard(state.message) { viewModel.retryPipeline() }
-                    else -> {}
+            // Processing state card
+            AnimatedVisibility(
+                visible = processingState is ProcessingState.Loading,
+                enter = fadeIn(tween(300)) + expandVertically(tween(300)),
+                exit  = fadeOut(tween(200)) + shrinkVertically(tween(200))
+            ) {
+                (processingState as? ProcessingState.Loading)?.let { loading ->
+                    ProcessingCard(state = loading, onCancel = viewModel::cancelPipeline)
+                }
+            }
+
+            // Error state card
+            AnimatedVisibility(
+                visible = processingState is ProcessingState.Error,
+                enter = fadeIn(tween(300)) + expandVertically(tween(300)),
+                exit  = fadeOut(tween(200)) + shrinkVertically(tween(200))
+            ) {
+                (processingState as? ProcessingState.Error)?.let { err ->
+                    ErrorCard(message = err.message, onRetry = viewModel::retryPipeline)
                 }
             }
 
@@ -224,7 +238,24 @@ fun VideoPlayerScreen(
             Spacer(Modifier.height(32.dp))
         }
 
-        // Bottom sheets
+        // Sheets & Dialogs
+        if (showModelsSheet) {
+            ModelManagerSheet(
+                modelManager = viewModel.modelManager,
+                onDismiss = { showModelsSheet = false }
+            )
+        }
+
+        if (showVoiceSettings) {
+            VoiceSettingsDialog(
+                selectedMode = voiceMode,
+                onModeSelected = viewModel::setVoiceMode,
+                lowConfFallback = lowConfFallback,
+                onFallbackSelected = viewModel::setLowConfFallback,
+                onDismiss = { showVoiceSettings = false }
+            )
+        }
+
         if (showLogSheet) {
             DiagnosticLogSheet(
                 logText = logText,
@@ -260,12 +291,14 @@ fun VideoPlayerScreen(
 @Composable
 private fun PremiumHeader(
     onOpenDiagnostics: () -> Unit,
-    onOpenLibrary: () -> Unit
+    onOpenLibrary: () -> Unit,
+    onOpenModels: () -> Unit,
+    onOpenVoiceSettings: () -> Unit
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp),
+            .padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
@@ -277,28 +310,30 @@ private fun PremiumHeader(
                     .size(38.dp)
                     .clip(RoundedCornerShape(10.dp))
             )
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(10.dp))
             Column {
                 Text(
                     "LinguaPlay",
                     color = Ivory,
-                    fontSize = 20.sp,
+                    fontSize = 19.sp,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 0.5.sp
                 )
                 Text(
-                    "Offline Dual-Dub Video Translator",
+                    "100% Offline AI Video Translation",
                     color = Gold,
-                    fontSize = 10.5.sp,
+                    fontSize = 10.sp,
                     fontWeight = FontWeight.Medium,
-                    letterSpacing = 1.sp
+                    letterSpacing = 0.8.sp
                 )
             }
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            HeaderIconButton(Icons.Default.Settings, "Voice Mode", onOpenVoiceSettings)
+            HeaderIconButton(Icons.Default.Add, "AI Models", onOpenModels)
             HeaderIconButton(Icons.AutoMirrored.Filled.List, "Library", onOpenLibrary)
-            HeaderIconButton(Icons.Default.Info, "Diagnostics", onOpenDiagnostics)
+            HeaderIconButton(Icons.Default.Info, "Logs", onOpenDiagnostics)
         }
     }
 }
@@ -308,12 +343,12 @@ private fun HeaderIconButton(icon: androidx.compose.ui.graphics.vector.ImageVect
     IconButton(
         onClick = onClick,
         modifier = Modifier
-            .size(40.dp)
+            .size(38.dp)
             .clip(RoundedCornerShape(10.dp))
             .background(BgCard)
             .border(1.dp, BorderGold, RoundedCornerShape(10.dp))
     ) {
-        Icon(icon, contentDescription = desc, tint = Gold, modifier = Modifier.size(20.dp))
+        Icon(icon, contentDescription = desc, tint = Gold, modifier = Modifier.size(18.dp))
     }
 }
 
@@ -324,16 +359,18 @@ private fun PickerCard(
     onPick: () -> Unit,
     onOpenLibrary: () -> Unit,
     libraryCount: Int,
-    detectionMode: String,
-    onDetectionModeChanged: (String) -> Unit,
-    manualLanguage: Language,
-    onManualLanguageChanged: (Language) -> Unit
+    sourceLanguage: Language?,
+    onSourceLanguageChanged: (Language?) -> Unit,
+    targetLanguage: Language,
+    onTargetLanguageChanged: (Language) -> Unit,
+    voiceMode: VoiceMode,
+    onOpenVoiceSettings: () -> Unit
 ) {
     Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-        // ── Detection Mode Toggle ──
+        // ── 1. Original (Source) Language ──
         SurfaceCard {
             Text(
-                "DETECTION MODE",
+                "ORIGINAL SPOKEN LANGUAGE",
                 color = MutedLabel,
                 fontSize = 10.sp,
                 fontWeight = FontWeight.Bold,
@@ -342,121 +379,130 @@ private fun PickerCard(
             Spacer(Modifier.height(10.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                listOf("auto" to "Automatic", "manual" to "Manual").forEach { (mode, label) ->
-                    val isSelected = detectionMode == mode
+                // Auto Detect option
+                val isAuto = sourceLanguage == null
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(if (isAuto) GoldGradient else Brush.linearGradient(listOf(BgElevated, BgElevated)))
+                        .border(1.dp, if (isAuto) Gold else BorderGold, RoundedCornerShape(10.dp))
+                        .clickable { onSourceLanguageChanged(null) }
+                        .padding(vertical = 10.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "Auto Detect",
+                        color = if (isAuto) Color(0xFF1A1000) else Ivory,
+                        fontSize = 12.sp,
+                        fontWeight = if (isAuto) FontWeight.Bold else FontWeight.Normal
+                    )
+                }
+
+                Language.entries.forEach { lang ->
+                    val isSelected = sourceLanguage == lang
                     Box(
                         modifier = Modifier
                             .weight(1f)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(
-                                if (isSelected) GoldGradient
-                                else Brush.linearGradient(listOf(BgElevated, BgElevated))
-                            )
-                            .border(
-                                1.dp,
-                                if (isSelected) Gold else BorderGold,
-                                RoundedCornerShape(12.dp)
-                            )
-                            .clickable { onDetectionModeChanged(mode) }
-                            .padding(vertical = 12.dp),
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (isSelected) GoldGradient else Brush.linearGradient(listOf(BgElevated, BgElevated)))
+                            .border(1.dp, if (isSelected) Gold else BorderGold, RoundedCornerShape(10.dp))
+                            .clickable { onSourceLanguageChanged(lang) }
+                            .padding(vertical = 10.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(
-                                label,
-                                color = if (isSelected) Color(0xFF1A1000) else Ivory,
-                                fontSize = 13.sp,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                            )
-                            Text(
-                                if (mode == "auto") "AI detects language" else "You select language",
-                                color = if (isSelected) Color(0xFF4A3000) else MutedLabel,
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                        }
+                        Text(
+                            lang.displayName,
+                            color = if (isSelected) Color(0xFF1A1000) else Ivory,
+                            fontSize = 12.sp,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                        )
                     }
                 }
             }
         }
 
-        // ── Manual Language Selector (only in manual mode) ──
-        AnimatedVisibility(
-            visible = detectionMode == "manual",
-            enter = fadeIn(tween(300)) + expandVertically(tween(300)),
-            exit = fadeOut(tween(200)) + shrinkVertically(tween(200))
-        ) {
-            SurfaceCard(borderColor = Gold.copy(alpha = 0.25f)) {
-                Text(
-                    "SELECT SOURCE LANGUAGE",
-                    color = MutedLabel,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 2.sp
-                )
-                Spacer(Modifier.height(10.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Language.entries.forEach { lang ->
-                        val isSelected = manualLanguage == lang
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(
-                                    if (isSelected) Brush.linearGradient(
-                                        listOf(
-                                            SuccessGreen.copy(alpha = 0.15f),
-                                            SuccessGreen.copy(alpha = 0.08f)
-                                        )
-                                    )
-                                    else Brush.linearGradient(listOf(BgElevated, BgElevated))
-                                )
-                                .border(
-                                    1.5.dp,
-                                    if (isSelected) SuccessGreen else BorderGold,
-                                    RoundedCornerShape(12.dp)
-                                )
-                                .clickable { onManualLanguageChanged(lang) }
-                                .padding(vertical = 14.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(
-                                    lang.displayName,
-                                    color = if (isSelected) SuccessGreen else Ivory,
-                                    fontSize = 14.sp,
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                                )
-                                if (isSelected) {
-                                    Text(
-                                        "✓ Selected",
-                                        color = SuccessGreen.copy(alpha = 0.8f),
-                                        fontSize = 9.sp,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
+        // ── 2. Target Translation Language ──
+        SurfaceCard {
+            Text(
+                "TRANSLATE TO",
+                color = MutedLabel,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 2.sp
+            )
+            Spacer(Modifier.height(10.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Language.entries.forEach { lang ->
+                    val isSelected = targetLanguage == lang
+                    val isDisabled = sourceLanguage == lang
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(
+                                when {
+                                    isSelected -> Brush.linearGradient(listOf(SuccessGreen.copy(alpha = 0.20f), SuccessGreen.copy(alpha = 0.10f)))
+                                    isDisabled -> Brush.linearGradient(listOf(BgCard, BgCard))
+                                    else -> Brush.linearGradient(listOf(BgElevated, BgElevated))
                                 }
-                            }
-                        }
+                            )
+                            .border(
+                                1.5.dp,
+                                when {
+                                    isSelected -> SuccessGreen
+                                    isDisabled -> Color.Transparent
+                                    else -> BorderGold
+                                },
+                                RoundedCornerShape(10.dp)
+                            )
+                            .clickable(enabled = !isDisabled) { onTargetLanguageChanged(lang) }
+                            .padding(vertical = 10.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            lang.displayName,
+                            color = when {
+                                isSelected -> SuccessGreen
+                                isDisabled -> MutedLabel.copy(alpha = 0.5f)
+                                else -> Ivory
+                            },
+                            fontSize = 12.sp,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                        )
                     }
                 }
-                Spacer(Modifier.height(8.dp))
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Text(
-                    "The video's spoken language. Translation & gender detection are still automatic.",
-                    color = IvoryDim,
+                    "Voice: ${voiceMode.displayName}",
+                    color = GoldDim,
                     fontSize = 11.sp,
-                    lineHeight = 15.sp
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    "Change ⚙",
+                    color = Gold,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.clickable { onOpenVoiceSettings() }
                 )
             }
         }
 
         Spacer(Modifier.height(4.dp))
 
-        // ── Video Picker Button ──
+        // ── 3. Video Picker Button ──
         SurfaceCard(
             modifier = Modifier
                 .fillMaxWidth()
@@ -465,56 +511,44 @@ private fun PickerCard(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 28.dp),
+                    .padding(vertical = 24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // Icon circle
                 Box(
                     modifier = Modifier
-                        .size(68.dp)
+                        .size(64.dp)
                         .clip(CircleShape)
-                        .background(
-                            Brush.radialGradient(
-                                listOf(Gold.copy(alpha = 0.15f), Color.Transparent)
-                            )
-                        )
+                        .background(Brush.radialGradient(listOf(Gold.copy(alpha = 0.15f), Color.Transparent)))
                         .border(1.5.dp, BorderGoldHi, CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(
-                        Icons.Default.PlayArrow,
-                        contentDescription = "Select Video",
-                        tint = Gold,
-                        modifier = Modifier.size(32.dp)
-                    )
+                    Icon(Icons.Default.PlayArrow, contentDescription = "Select Video", tint = Gold, modifier = Modifier.size(30.dp))
                 }
 
-                Spacer(Modifier.height(20.dp))
+                Spacer(Modifier.height(16.dp))
 
                 Text(
                     "Select Video from Device",
                     color = Ivory,
-                    fontSize = 17.sp,
+                    fontSize = 16.sp,
                     fontWeight = FontWeight.SemiBold
                 )
 
                 Spacer(Modifier.height(6.dp))
 
+                val srcLabel = sourceLanguage?.displayName ?: "Auto-Detected"
                 Text(
-                    if (detectionMode == "auto")
-                        "Auto-detects Hindi, English or Telugu dialogue\nTranslates → other languages • Gender-matched voice"
-                    else
-                        "Translates ${manualLanguage.displayName} dialogue → other languages\nGender-matched voice • Background music preserved",
+                    "Translates $srcLabel dialogue → ${targetLanguage.displayName}\n100% On-Device • Whisper STT • NLLB-200 • Piper TTS",
                     color = IvoryDim,
-                    fontSize = 12.sp,
+                    fontSize = 11.5.sp,
                     textAlign = TextAlign.Center,
-                    lineHeight = 18.sp
+                    lineHeight = 16.sp
                 )
             }
         }
 
         if (libraryCount > 0) {
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(10.dp))
             SurfaceCard(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -529,17 +563,8 @@ private fun PickerCard(
                         Icon(Icons.AutoMirrored.Filled.List, null, tint = Gold, modifier = Modifier.size(20.dp))
                         Spacer(Modifier.width(10.dp))
                         Column {
-                            Text(
-                                "Your Past Translations",
-                                color = Ivory,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Text(
-                                "$libraryCount saved run${if (libraryCount != 1) "s" else ""}",
-                                color = IvoryDim,
-                                fontSize = 11.sp
-                            )
+                            Text("Your Past Translations", color = Ivory, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                            Text("$libraryCount saved run${if (libraryCount != 1) "s" else ""}", color = IvoryDim, fontSize = 11.sp)
                         }
                     }
                     Text("→", color = Gold, fontSize = 18.sp, fontWeight = FontWeight.Bold)
@@ -581,42 +606,78 @@ private fun VideoSurface(viewModel: VideoPlayerViewModel) {
 // ─────────────────────────── Processing Card ─────────────────────────────────
 
 @Composable
-private fun ProcessingCard(state: ProcessingState.Loading) {
-    SurfaceCard(borderColor = InfoBlue.copy(alpha = 0.25f)) {
+private fun ProcessingCard(
+    state: ProcessingState.Loading,
+    onCancel: () -> Unit
+) {
+    SurfaceCard(borderColor = InfoBlue.copy(alpha = 0.35f)) {
         Column(modifier = Modifier.fillMaxWidth()) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                CircularProgressIndicator(
-                    progress = { state.progress.coerceAtLeast(0f) },
-                    modifier = Modifier.size(40.dp),
-                    color = Gold,
-                    trackColor = BgElevated,
-                    strokeWidth = 3.dp
-                )
-                Spacer(Modifier.width(16.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        state.step,
-                        color = Ivory,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "${(state.progress * 100).toInt()}% complete",
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                    CircularProgressIndicator(
+                        progress = { state.progress.coerceAtLeast(0f) },
+                        modifier = Modifier.size(38.dp),
                         color = Gold,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold
+                        trackColor = BgElevated,
+                        strokeWidth = 3.dp
                     )
+                    Spacer(Modifier.width(14.dp))
+                    Column {
+                        Text(
+                            "Stage ${state.currentStage}/${state.totalStages}",
+                            color = Gold,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.sp
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            state.step,
+                            color = Ivory,
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                IconButton(onClick = onCancel, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Default.Close, contentDescription = "Cancel", tint = IvoryDim, modifier = Modifier.size(18.dp))
                 }
             }
+
             Spacer(Modifier.height(12.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    "Overall Progress",
+                    color = MutedLabel,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    "${(state.progress * 100).toInt()}%",
+                    color = Gold,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Spacer(Modifier.height(4.dp))
+
             LinearProgressIndicator(
                 progress = { state.progress.coerceAtLeast(0f) },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(3.dp)
+                    .height(4.dp)
                     .clip(RoundedCornerShape(2.dp)),
                 color = Gold,
                 trackColor = BgElevated
@@ -686,7 +747,7 @@ private fun LanguageSelector(
 ) {
     SurfaceCard {
         Text(
-            "SELECT AUDIO TRANSLATION",
+            "SELECT AUDIO PLAYBACK TRACK",
             color = MutedLabel,
             fontSize = 10.sp,
             fontWeight = FontWeight.Bold,
@@ -751,17 +812,21 @@ private fun MusicHint(language: Language, sourceLanguage: Language) {
             .fillMaxWidth()
             .padding(horizontal = 16.dp)
             .clip(RoundedCornerShape(10.dp))
-            .background(SuccessGreen.copy(alpha = 0.06f))
-            .border(1.dp, SuccessGreen.copy(alpha = 0.18f), RoundedCornerShape(10.dp))
-            .padding(horizontal = 14.dp, vertical = 10.dp)
+            .background(BgCard)
+            .border(1.dp, BorderGold, RoundedCornerShape(10.dp))
+            .padding(horizontal = 12.dp, vertical = 8.dp)
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("♪", fontSize = 14.sp, color = SuccessGreen)
-            Spacer(Modifier.width(8.dp))
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("🎵", fontSize = 12.sp)
+            Spacer(Modifier.width(6.dp))
             Text(
-                "Background music preserved — translated voice overlaid",
-                color = SuccessGreen.copy(alpha = 0.8f),
-                fontSize = 11.5.sp,
+                "Original speech muted • Dubbed ${language.displayName} audio synchronized",
+                color = IvoryDim,
+                fontSize = 11.sp,
                 fontWeight = FontWeight.Medium
             )
         }
@@ -786,9 +851,8 @@ private fun ActionButtonRow(onUploadNew: () -> Unit, onOpenLibrary: () -> Unit) 
         )
         ActionButton(
             modifier = Modifier.weight(1f),
-            label = "Open Library",
+            label = "Saved Translations",
             accent = true,
-            icon = { Icon(Icons.AutoMirrored.Filled.List, null, tint = Gold, modifier = Modifier.size(16.dp)) },
             onClick = onOpenLibrary
         )
     }
@@ -901,7 +965,6 @@ private fun LibrarySheet(
                 .padding(horizontal = 20.dp)
                 .padding(bottom = 20.dp)
         ) {
-            // Header
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -985,7 +1048,6 @@ private fun LibraryRunCard(run: VideoRun, onPlay: () -> Unit, onDelete: () -> Un
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Status dot
             Box(
                 modifier = Modifier
                     .size(8.dp)

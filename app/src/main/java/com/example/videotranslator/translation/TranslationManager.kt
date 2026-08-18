@@ -1,116 +1,61 @@
 package com.example.videotranslator.translation
 
+import android.content.Context
 import com.example.videotranslator.model.Language
 import com.example.videotranslator.model.TranslationSegment
 import com.example.videotranslator.util.DiagnosticLogger
-import com.google.mlkit.nl.translate.TranslateLanguage
-import com.google.mlkit.nl.translate.Translation
-import com.google.mlkit.nl.translate.TranslatorOptions
-import kotlinx.coroutines.tasks.await
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.IOException
 import kotlin.math.max
 import kotlin.math.min
 
 private const val TAG = "TranslationManager"
-private const val MODEL_DOWNLOAD_TIMEOUT_MS = 30_000L
 private const val DIVERGENCE_RETRANSLATE_THRESHOLD = 0.45f
 
 /**
- * Multi-Directional ML Kit NMT Translation Manager with Self-Verification.
+ * Multi-Directional On-Device Translation Manager using NLLB-200.
  *
- * Supports all three source languages (Hindi, Telugu, English) translating
- * automatically into the other two target languages:
- *   Hindi   → English + Telugu
- *   Telugu  → Hindi   + English
- *   English → Hindi   + Telugu
+ * Supports all 6 directional translations locally:
+ *   1. Hindi   (hin_Deva) → English (eng_Latn) & Telugu (tel_Telu)
+ *   2. English (eng_Latn) → Hindi   (hin_Deva) & Telugu (tel_Telu)
+ *   3. Telugu  (tel_Telu) → Hindi   (hin_Deva) & English (eng_Latn)
  *
- * Additional features:
- *  1. Disfluency cleanup before NMT
- *  2. Back-translation self-verification (Target-1 → Source) with divergence score
- *  3. Adaptive boundary re-clustering for low-confidence clusters
- *  4. Duration-proportional word mapping back onto fine audio sync segments
+ * Pipeline features:
+ *  1. Disfluency & stutter cleanup
+ *  2. Context-aware sentence grouping
+ *  3. NLLB-200 INT8 ONNX translation
+ *  4. Back-translation self-verification (target1 → source)
+ *  5. Adaptive boundary re-clustering on high divergence
+ *  6. Fine timestamp duration mapping
  */
-class TranslationManager {
+class TranslationManager(context: Context? = null) {
 
     private val disfluencyCleaner = DisfluencyCleaner()
+    private val translationContext = TranslationContext()
+    private var nllbTranslator: NllbTranslator? = context?.let { NllbTranslator(it) }
 
-    // ── All 6 directional ML Kit translator clients ────────────────────────────
-    private val hiEnTranslator = Translation.getClient(
-        TranslatorOptions.Builder()
-            .setSourceLanguage(TranslateLanguage.HINDI)
-            .setTargetLanguage(TranslateLanguage.ENGLISH)
-            .build()
-    )
-    private val hiTeTranslator = Translation.getClient(
-        TranslatorOptions.Builder()
-            .setSourceLanguage(TranslateLanguage.HINDI)
-            .setTargetLanguage(TranslateLanguage.TELUGU)
-            .build()
-    )
-    private val enHiTranslator = Translation.getClient(
-        TranslatorOptions.Builder()
-            .setSourceLanguage(TranslateLanguage.ENGLISH)
-            .setTargetLanguage(TranslateLanguage.HINDI)
-            .build()
-    )
-    private val enTeTranslator = Translation.getClient(
-        TranslatorOptions.Builder()
-            .setSourceLanguage(TranslateLanguage.ENGLISH)
-            .setTargetLanguage(TranslateLanguage.TELUGU)
-            .build()
-    )
-    private val teHiTranslator = Translation.getClient(
-        TranslatorOptions.Builder()
-            .setSourceLanguage(TranslateLanguage.TELUGU)
-            .setTargetLanguage(TranslateLanguage.HINDI)
-            .build()
-    )
-    private val teEnTranslator = Translation.getClient(
-        TranslatorOptions.Builder()
-            .setSourceLanguage(TranslateLanguage.TELUGU)
-            .setTargetLanguage(TranslateLanguage.ENGLISH)
-            .build()
-    )
-
-    suspend fun downloadModels(): Result<Unit> {
-        DiagnosticLogger.log(TAG, "STAGE 3 - Ensuring all 3-language NMT models are ready (HI↔EN, HI↔TE, EN↔TE)…")
-        return try {
-            withTimeout(MODEL_DOWNLOAD_TIMEOUT_MS) {
-                listOf(
-                    hiEnTranslator, hiTeTranslator,
-                    enHiTranslator, enTeTranslator,
-                    teHiTranslator, teEnTranslator
-                ).forEachIndexed { i, client ->
-                    val tag = listOf("HI→EN","HI→TE","EN→HI","EN→TE","TE→HI","TE→EN")[i]
-                    DiagnosticLogger.log(TAG, "Checking/Downloading $tag model…")
-                    client.downloadModelIfNeeded().await()
-                }
-            }
-            DiagnosticLogger.log(TAG, "STAGE 3 - All NMT models ready ✓")
-            Result.success(Unit)
+    suspend fun downloadModels(): Result<Unit> = withContext(Dispatchers.IO) {
+        DiagnosticLogger.log(TAG, "STAGE 4 - Initializing on-device translation engine…")
+        return@withContext try {
+            nllbTranslator?.loadEngine() ?: Result.success(Unit)
         } catch (e: Exception) {
-            val msg = "Failed to download NMT models: ${e.localizedMessage}"
-            DiagnosticLogger.log(TAG, "STAGE 3 ERROR: $msg", e)
+            val msg = "Translation engine initialization failed: ${e.localizedMessage}"
+            DiagnosticLogger.log(TAG, "STAGE 4 ERROR: $msg", e)
             Result.failure(IOException(msg, e))
         }
     }
 
     /**
-     * Translates fine sync segments from the detected source language into
-     * the two remaining target languages, with disfluency cleanup and
-     * back-translation self-verification.
-     *
-     * Source language text is preserved as-is in the relevant field.
-     * Target language fields are populated with translated text.
+     * Translates segments from sourceLanguage into all remaining target languages.
      */
     suspend fun translate(
         fineSegments: List<TranslationSegment>,
         sourceLanguage: Language = Language.HINDI
-    ): List<TranslationSegment> {
+    ): List<TranslationSegment> = withContext(Dispatchers.Default) {
         if (fineSegments.isEmpty()) {
-            DiagnosticLogger.log(TAG, "STAGE 3 - No segments to translate.")
-            return emptyList()
+            DiagnosticLogger.log(TAG, "STAGE 4 - No segments to translate.")
+            return@withContext emptyList()
         }
 
         val startTime = System.currentTimeMillis()
@@ -119,34 +64,33 @@ class TranslationManager {
         val target2 = targets[1]
 
         DiagnosticLogger.log(TAG,
-            "STAGE 3 - Source: $sourceLanguage → Targets: $target1, $target2 | ${fineSegments.size} segments")
+            "STAGE 4 - NLLB-200 Source: $sourceLanguage (${sourceLanguage.nllbCode}) → Targets: $target1 (${target1.nllbCode}), $target2 (${target2.nllbCode}) | ${fineSegments.size} segments")
 
         val clusters = clusterSegmentsIntoFullSentences(fineSegments, gapThresholdMs = 1800L)
-        DiagnosticLogger.log(TAG, "STAGE 3 - ${clusters.size} coarse sentence clusters")
+        DiagnosticLogger.log(TAG, "STAGE 4 - ${clusters.size} coarse sentence clusters")
 
         val result = mutableListOf<TranslationSegment>()
 
         for ((cIdx, cluster) in clusters.withIndex()) {
-            // Raw source text is stored in the `hindi` field by Vosk regardless of actual language
-            val rawSourceText = cluster.joinToString(" ") { it.hindi.trim() }.trim()
+            val rawSourceText = cluster.joinToString(" ") { it.hindi.trim().ifBlank { it.sourceText.trim() } }.trim()
             if (rawSourceText.isBlank()) { result.addAll(cluster); continue }
 
             // 1. Disfluency cleanup
             val cleanupResult = disfluencyCleaner.clean(rawSourceText)
             val cleanedSource = cleanupResult.cleanedText
 
-            // 2. Translate to target1 and target2
-            val t1Text = translateText(cleanedSource, sourceLanguage, target1)
-            val t2Text = translateText(cleanedSource, sourceLanguage, target2)
+            // 2. Translate to target1 and target2 using NLLB engine
+            val t1Text = translateSingle(cleanedSource, sourceLanguage, target1)
+            val t2Text = translateSingle(cleanedSource, sourceLanguage, target2)
 
             // 3. Back-translation self-verification (target1 → source)
-            val backText     = if (t1Text.isNotBlank()) translateText(t1Text, target1, sourceLanguage) else ""
-            val divergence   = computeDivergenceScore(cleanedSource, backText)
+            val backText = if (t1Text.isNotBlank()) translateSingle(t1Text, target1, sourceLanguage) else ""
+            val divergence = computeDivergenceScore(cleanedSource, backText)
 
             DiagnosticLogger.log(TAG, "Cluster [$cIdx] (${cluster.first().startMs}–${cluster.last().endMs}ms):\n" +
-                    "   SOURCE (${sourceLanguage}): \"$cleanedSource\"\n" +
-                    "   ${target1}: \"$t1Text\"\n" +
-                    "   ${target2}: \"$t2Text\"\n" +
+                    "   SOURCE (${sourceLanguage.nllbCode}): \"$cleanedSource\"\n" +
+                    "   ${target1.nllbCode}: \"$t1Text\"\n" +
+                    "   ${target2.nllbCode}: \"$t2Text\"\n" +
                     "   BACK-TRANSLATION: \"$backText\"\n" +
                     "   DIVERGENCE: ${"%.3f".format(divergence)}${if (divergence > DIVERGENCE_RETRANSLATE_THRESHOLD) " (HIGH ⚠️)" else " ✓"}")
 
@@ -155,16 +99,16 @@ class TranslationManager {
                 val mid = cluster.size / 2
                 val a1 = cluster.subList(0, mid)
                 val a2 = cluster.subList(mid, cluster.size)
-                val c1 = disfluencyCleaner.clean(a1.joinToString(" ") { it.hindi.trim() }).cleanedText
-                val c2 = disfluencyCleaner.clean(a2.joinToString(" ") { it.hindi.trim() }).cleanedText
+                val c1 = disfluencyCleaner.clean(a1.joinToString(" ") { it.hindi.trim().ifBlank { it.sourceText.trim() } }).cleanedText
+                val c2 = disfluencyCleaner.clean(a2.joinToString(" ") { it.hindi.trim().ifBlank { it.sourceText.trim() } }).cleanedText
 
-                val t1a = translateText(c1, sourceLanguage, target1)
-                val t2a = translateText(c1, sourceLanguage, target2)
-                val t1b = translateText(c2, sourceLanguage, target1)
-                val t2b = translateText(c2, sourceLanguage, target2)
+                val t1a = translateSingle(c1, sourceLanguage, target1)
+                val t2a = translateSingle(c1, sourceLanguage, target2)
+                val t1b = translateSingle(c2, sourceLanguage, target1)
+                val t2b = translateSingle(c2, sourceLanguage, target2)
 
-                val bka = if (t1a.isNotBlank()) translateText(t1a, target1, sourceLanguage) else ""
-                val bkb = if (t1b.isNotBlank()) translateText(t1b, target1, sourceLanguage) else ""
+                val bka = if (t1a.isNotBlank()) translateSingle(t1a, target1, sourceLanguage) else ""
+                val bkb = if (t1b.isNotBlank()) translateSingle(t1b, target1, sourceLanguage) else ""
                 val altDiv = (computeDivergenceScore(c1, bka) + computeDivergenceScore(c2, bkb)) / 2f
 
                 if (altDiv < divergence) {
@@ -179,37 +123,51 @@ class TranslationManager {
         }
 
         val ms = System.currentTimeMillis() - startTime
-        DiagnosticLogger.log(TAG, "STAGE 3 - Translation complete for ${result.size} segments in ${ms}ms ✓")
-        return result
+        DiagnosticLogger.log(TAG, "STAGE 4 - NLLB translation complete for ${result.size} segments in ${ms}ms ✓")
+        return@withContext result
     }
 
-    // ── Private helpers ────────────────────────────────────────────────────────
+    private suspend fun translateSingle(text: String, from: Language, to: Language): String {
+        if (text.isBlank() || from == to) return text
+        return nllbTranslator?.translate(text, from, to) ?: text
+    }
 
-    private suspend fun translateText(text: String, from: Language, to: Language): String {
-        if (text.isBlank()) return ""
-        return try {
-            val raw = translatorFor(from, to).translate(text).await()
-            cleanSentence(raw)
-        } catch (e: Exception) {
-            DiagnosticLogger.log(TAG, "$from→$to translation failed: ${e.localizedMessage}")
-            ""
+    private fun clusterSegmentsIntoFullSentences(
+        segments: List<TranslationSegment>,
+        gapThresholdMs: Long = 1800L
+    ): List<List<TranslationSegment>> {
+        val clusters = mutableListOf<MutableList<TranslationSegment>>()
+        var currentCluster = mutableListOf<TranslationSegment>()
+
+        for (seg in segments) {
+            if (currentCluster.isEmpty()) {
+                currentCluster.add(seg)
+                continue
+            }
+            val prev = currentCluster.last()
+            val pause = seg.startMs - prev.endMs
+            val dur = seg.endMs - currentCluster.first().startMs
+
+            if (pause >= gapThresholdMs || dur >= 15000L || currentCluster.size >= 25) {
+                clusters.add(currentCluster)
+                currentCluster = mutableListOf(seg)
+            } else {
+                currentCluster.add(seg)
+            }
         }
+        if (currentCluster.isNotEmpty()) clusters.add(currentCluster)
+        return clusters
     }
 
-    private fun translatorFor(from: Language, to: Language) = when {
-        from == Language.HINDI   && to == Language.ENGLISH  -> hiEnTranslator
-        from == Language.HINDI   && to == Language.TELUGU   -> hiTeTranslator
-        from == Language.ENGLISH && to == Language.HINDI    -> enHiTranslator
-        from == Language.ENGLISH && to == Language.TELUGU   -> enTeTranslator
-        from == Language.TELUGU  && to == Language.HINDI    -> teHiTranslator
-        from == Language.TELUGU  && to == Language.ENGLISH  -> teEnTranslator
-        else -> throw IllegalArgumentException("No translator for $from→$to")
+    private fun computeDivergenceScore(s1: String, s2: String): Float {
+        if (s1.isBlank() || s2.isBlank()) return 1.0f
+        val w1 = s1.split("\\s+".toRegex()).map { it.lowercase() }
+        val w2 = s2.split("\\s+".toRegex()).map { it.lowercase() }
+        val intersection = w1.intersect(w2.toSet()).size
+        val union = w1.union(w2.toSet()).size
+        return if (union == 0) 1.0f else (1.0f - (intersection.toFloat() / union.toFloat()))
     }
 
-    /**
-     * Maps translated target1 and target2 text back into the segment fields,
-     * preserving source text in its own field.
-     */
     private fun mapToSegments(
         cluster: List<TranslationSegment>,
         t1Text: String,
@@ -223,7 +181,8 @@ class TranslationManager {
         val t2Words = t2Text.split("\\s+".toRegex()).filter { it.isNotBlank() }
 
         val mapped = mutableListOf<TranslationSegment>()
-        var t1Idx = 0; var t2Idx = 0
+        var t1Idx = 0
+        var t2Idx = 0
 
         for ((i, seg) in cluster.withIndex()) {
             val ratio = (seg.endMs - seg.startMs).toDouble() / totalMs
@@ -234,72 +193,37 @@ class TranslationManager {
 
             val t1Slice = t1Words.subList(t1Idx, min(t1Idx + t1Count, t1Words.size)).joinToString(" ")
             val t2Slice = t2Words.subList(t2Idx, min(t2Idx + t2Count, t2Words.size)).joinToString(" ")
-            t1Idx += t1Count; t2Idx += t2Count
+            t1Idx += t1Count
+            t2Idx += t2Count
 
-            // Populate all three language fields; source field stays as-is
             val (hindiText, englishText, teluguText) = when (sourceLanguage) {
-                Language.HINDI -> Triple(seg.hindi, /* t1 */ t1Slice.ifBlank { seg.english }, /* t2 */ t2Slice.ifBlank { seg.telugu })
+                Language.HINDI -> Triple(seg.hindi, t1Slice.ifBlank { seg.english }, t2Slice.ifBlank { seg.telugu })
                 Language.ENGLISH -> Triple(
                     if (target1 == Language.HINDI) t1Slice.ifBlank { seg.hindi } else t2Slice.ifBlank { seg.hindi },
-                    seg.hindi, // original English stored in hindi field by Vosk
+                    seg.hindi.ifBlank { seg.sourceText },
                     if (target1 == Language.TELUGU) t1Slice.ifBlank { seg.telugu } else t2Slice.ifBlank { seg.telugu }
                 )
                 Language.TELUGU -> Triple(
                     if (target1 == Language.HINDI) t1Slice.ifBlank { seg.hindi } else t2Slice.ifBlank { seg.hindi },
                     if (target1 == Language.ENGLISH) t1Slice.ifBlank { seg.english } else t2Slice.ifBlank { seg.english },
-                    seg.hindi  // original Telugu stored in hindi field by Vosk
+                    seg.hindi.ifBlank { seg.sourceText }
                 )
             }
 
-            mapped.add(seg.copy(
-                hindi   = hindiText,
-                english = englishText,
-                telugu  = teluguText,
-                detectedSourceLanguage = sourceLanguage.name
-            ))
+            mapped.add(
+                seg.copy(
+                    id = "seg_${mapped.size}",
+                    hindi = hindiText,
+                    english = englishText,
+                    telugu = teluguText,
+                    sourceLanguage = sourceLanguage.nllbCode,
+                    targetLanguage = target1.nllbCode,
+                    sourceText = seg.hindi.ifBlank { seg.sourceText },
+                    translatedText = if (sourceLanguage == Language.ENGLISH) hindiText else englishText
+                )
+            )
         }
+
         return mapped
     }
-
-    private fun computeDivergenceScore(original: String, backTranslated: String): Float {
-        val s1 = original.trim(); val s2 = backTranslated.trim()
-        if (s1.isBlank() || s2.isBlank()) return 1.0f
-        val dist = levenshteinDistance(s1, s2)
-        return (dist.toFloat() / max(s1.length, s2.length).toFloat()).coerceIn(0f, 1f)
-    }
-
-    private fun levenshteinDistance(s1: String, s2: String): Int {
-        val dp = Array(s1.length + 1) { IntArray(s2.length + 1) }
-        for (i in 0..s1.length) dp[i][0] = i
-        for (j in 0..s2.length) dp[0][j] = j
-        for (i in 1..s1.length) for (j in 1..s2.length) {
-            val cost = if (s1[i - 1] == s2[j - 1]) 0 else 1
-            dp[i][j] = min(min(dp[i-1][j] + 1, dp[i][j-1] + 1), dp[i-1][j-1] + cost)
-        }
-        return dp[s1.length][s2.length]
-    }
-
-    private fun clusterSegmentsIntoFullSentences(
-        segments: List<TranslationSegment>,
-        gapThresholdMs: Long
-    ): List<List<TranslationSegment>> {
-        val clusters = mutableListOf<MutableList<TranslationSegment>>()
-        var current = mutableListOf<TranslationSegment>()
-        for (seg in segments) {
-            if (current.isEmpty()) { current.add(seg); continue }
-            val gap = seg.startMs - current.last().endMs
-            val words = current.sumOf { it.hindi.trim().split("\\s+".toRegex()).count { w -> w.isNotBlank() } } +
-                    seg.hindi.trim().split("\\s+".toRegex()).count { it.isNotBlank() }
-            val isInterjection = seg.hindi.trim().split("\\s+".toRegex()).count { it.isNotBlank() } <= 2 && gap >= 600L
-            if (gap <= gapThresholdMs && words <= 35 && !isInterjection) {
-                current.add(seg)
-            } else {
-                clusters.add(current); current = mutableListOf(seg)
-            }
-        }
-        if (current.isNotEmpty()) clusters.add(current)
-        return clusters
-    }
-
-    private fun cleanSentence(raw: String): String = raw.trim().replace(Regex("\\s+"), " ")
 }
