@@ -56,6 +56,7 @@ import com.example.videotranslator.R
 import com.example.videotranslator.library.VideoRun
 import com.example.videotranslator.model.Language
 import com.example.videotranslator.model.ProcessingState
+import com.example.videotranslator.models.ModelInstallProgress
 import com.example.videotranslator.tts.VoiceAvailabilityStatus
 import com.example.videotranslator.util.DiagnosticLogger
 
@@ -97,6 +98,7 @@ fun VideoPlayerScreen(
     val logText            by DiagnosticLogger.logTextFlow.collectAsStateWithLifecycle()
     val detectedSourceLang by viewModel.detectedSourceLanguage.collectAsStateWithLifecycle()
     val manualSourceLang   by viewModel.manualSourceLanguage.collectAsStateWithLifecycle()
+    val installProgress    by viewModel.installProgress.collectAsStateWithLifecycle()
 
     var showLogSheet      by remember { mutableStateOf(false) }
     var showLibrarySheet  by remember { mutableStateOf(false) }
@@ -151,16 +153,14 @@ fun VideoPlayerScreen(
                 onOpenDiagnostics = { showLogSheet = true }
             )
 
-            Spacer(Modifier.height(20.dp))
-
-            val isAllModelReady by viewModel.isAllModelReady.collectAsStateWithLifecycle()
+            Spacer(Modifier.height(16.dp))
 
             if (videoUri == null) {
                 CleanPickerCard(
                     onPick = { videoPicker.launch("video/*") },
                     onOpenLibrary = { showLibrarySheet = true },
                     libraryCount = libraryRuns.size,
-                    isAllModelReady = isAllModelReady,
+                    installProgress = installProgress,
                     detectionMode = detectionMode,
                     onDetectionModeChanged = { mode ->
                         detectionMode = mode
@@ -223,7 +223,6 @@ fun VideoPlayerScreen(
                     MusicHint(currentLanguage, detectedSourceLang)
                     Spacer(Modifier.height(14.dp))
 
-                    // Export & Share Current Active Video Run
                     val activeRun = libraryRuns.find { it.runId == currentRunId }
                         ?: VideoRun(
                             runId = currentRunId ?: "current_run",
@@ -275,6 +274,7 @@ fun VideoPlayerScreen(
             DiagnosticLogSheet(
                 logText = logText,
                 onDismiss = { showLogSheet = false },
+                onClear = { DiagnosticLogger.clearLogs() },
                 onCopy = {
                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                     clipboard.setPrimaryClip(ClipData.newPlainText("LinguaPlay Logs", logText))
@@ -376,43 +376,68 @@ private fun CleanPickerCard(
     onPick: () -> Unit,
     onOpenLibrary: () -> Unit,
     libraryCount: Int,
-    isAllModelReady: Boolean,
+    installProgress: ModelInstallProgress,
     detectionMode: String,
     onDetectionModeChanged: (String) -> Unit,
     manualLanguage: Language,
     onManualLanguageChanged: (Language) -> Unit
 ) {
     Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-        // ── 0. AI Status Indicator ──
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 4.dp, vertical = 2.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(if (isAllModelReady) SuccessGreen.copy(alpha = 0.08f) else Gold.copy(alpha = 0.08f))
-                .border(1.dp, if (isAllModelReady) SuccessGreen.copy(alpha = 0.25f) else Gold.copy(alpha = 0.25f), RoundedCornerShape(8.dp))
-                .padding(horizontal = 12.dp, vertical = 6.dp)
+        // ── 0. AI Model Installation & Readiness Card ──
+        SurfaceCard(
+            borderColor = if (installProgress.isComplete) SuccessGreen.copy(alpha = 0.35f) else Gold.copy(alpha = 0.35f)
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(7.dp)
-                        .clip(CircleShape)
-                        .background(if (isAllModelReady) SuccessGreen else Gold)
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    if (isAllModelReady) "100% On-Device AI Models Ready • Zero Cloud"
-                    else "Initializing On-Device Multilingual Models in Background...",
-                    color = if (isAllModelReady) SuccessGreen else GoldLight,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    letterSpacing = 0.3.sp
-                )
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(if (installProgress.isComplete) SuccessGreen else Gold)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            if (installProgress.isComplete) "100% On-Device Neural AI Engines Ready"
+                            else "Installing On-Device Neural Models (${installProgress.installedCount}/${installProgress.totalCount})",
+                            color = if (installProgress.isComplete) SuccessGreen else GoldLight,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    if (!installProgress.isComplete) {
+                        Text(
+                            "${(installProgress.currentProgress * 100).toInt()}%",
+                            color = Gold,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                if (!installProgress.isComplete) {
+                    Spacer(Modifier.height(8.dp))
+                    LinearProgressIndicator(
+                        progress = { installProgress.currentProgress.coerceIn(0f, 1f) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(2.dp)),
+                        color = Gold,
+                        trackColor = BgElevated
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        installProgress.statusMessage,
+                        color = IvoryDim,
+                        fontSize = 11.sp
+                    )
+                }
             }
         }
 
@@ -632,7 +657,7 @@ private fun CleanProcessingCard(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                     CircularProgressIndicator(
-                        progress = { state.progress.coerceAtLeast(0f) },
+                        progress = { state.progress.coerceIn(0f, 1f) },
                         modifier = Modifier.size(36.dp),
                         color = Gold,
                         trackColor = BgElevated,
@@ -667,7 +692,7 @@ private fun CleanProcessingCard(
             Spacer(Modifier.height(12.dp))
 
             LinearProgressIndicator(
-                progress = { state.progress.coerceAtLeast(0f) },
+                progress = { state.progress.coerceIn(0f, 1f) },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(3.5.dp)
@@ -1117,7 +1142,6 @@ private fun LibraryRunCard(
 
             Spacer(Modifier.height(10.dp))
 
-            // Action row: Export, Share, Delete
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End,
@@ -1178,6 +1202,7 @@ private fun MetadataPill(text: String) {
 private fun DiagnosticLogSheet(
     logText: String,
     onDismiss: () -> Unit,
+    onClear: () -> Unit,
     onCopy: () -> Unit
 ) {
     ModalBottomSheet(
@@ -1198,15 +1223,25 @@ private fun DiagnosticLogSheet(
             ) {
                 Column {
                     Text("Pipeline Diagnostics", color = Ivory, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                    Text("System & processing logs", color = IvoryDim, fontSize = 12.sp)
+                    Text("Real-time AI pipeline execution trace", color = IvoryDim, fontSize = 12.sp)
                 }
-                Button(
-                    onClick = onCopy,
-                    colors = ButtonDefaults.buttonColors(containerColor = Gold),
-                    shape = RoundedCornerShape(10.dp),
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
-                ) {
-                    Text("Copy", color = Color(0xFF1A1000), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = onClear,
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, BorderGold),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Text("Clear", color = IvoryDim, fontSize = 12.sp)
+                    }
+                    Button(
+                        onClick = onCopy,
+                        colors = ButtonDefaults.buttonColors(containerColor = Gold),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+                    ) {
+                        Text("Copy", color = Color(0xFF1A1000), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
             Spacer(Modifier.height(14.dp))
@@ -1224,8 +1259,8 @@ private fun DiagnosticLogSheet(
                     logText.ifBlank { "No logs recorded yet." },
                     color = Color(0xFF00FF66),
                     fontFamily = FontFamily.Monospace,
-                    fontSize = 10.5.sp,
-                    lineHeight = 15.sp
+                    fontSize = 11.sp,
+                    lineHeight = 16.sp
                 )
             }
         }

@@ -104,6 +104,7 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
     val manualSourceLanguage: StateFlow<Language?> = _manualSourceLanguage.asStateFlow()
 
     val isAllModelReady: StateFlow<Boolean> = modelManager.isAllReady
+    val installProgress = modelManager.installProgress
 
     private var pipelineJob: Job? = null
     private var ttsPollingJob: Job? = null

@@ -27,7 +27,7 @@ private const val TAG = "VideoTranslationPipeline"
 
 /**
  * Enterprise 7-Stage On-Device Multilingual Video Translation Pipeline.
- * 100% Offline • Zero Cloud • Pure Neural Edge AI.
+ * 100% Offline • Zero Cloud • Pure Neural Edge AI with Live Segment-by-Segment Progress.
  */
 class VideoTranslationPipeline(
     private val context: Context,
@@ -62,7 +62,7 @@ class VideoTranslationPipeline(
     )
 
     /**
-     * Executes full 7-stage offline video translation pipeline.
+     * Executes full 7-stage offline video translation pipeline with continuous smooth progress.
      */
     suspend fun execute(
         videoUri: Uri,
@@ -72,39 +72,49 @@ class VideoTranslationPipeline(
         onProgress: (ProcessingState.Loading) -> Unit
     ): PipelineResult = withContext(Dispatchers.IO) {
         val runId = UUID.randomUUID().toString()
-        DiagnosticLogger.log(TAG, "══════════ STARTING 100% OFFLINE NEURAL PIPELINE [Run: $runId] ══════════")
+        val videoName = videoUri.lastPathSegment?.substringAfterLast('/') ?: "video.mp4"
+        DiagnosticLogger.log("PIPELINE", "══════════ STARTING VIDEO TRANSLATION PIPELINE [Run: $runId] ══════════")
+        DiagnosticLogger.log("PIPELINE", "Video Source: $videoName")
 
         val pcmFile = cache.pcmFileForRun(runId)
         val instrumentalFile = cache.instrumentalFileForRun(runId)
         val renderedDir = cache.renderedAudioDirForRun(runId)
 
         try {
-            // STAGE 1: Audio Extraction & Voice Separation
+            // STAGE 1: Audio Extraction & Voice Isolation
             onProgress(
                 ProcessingState.Loading(
                     currentStage = 1,
                     totalStages = 7,
-                    step = "Extracting audio and isolating voice tracks…",
-                    progress = 0.10f
+                    step = "Extracting audio track & isolating voice dialogue…",
+                    progress = 0.08f
                 )
             )
             val extractRes = audioExtractor.extractToFiles(videoUri, pcmFile, instrumentalFile)
             val fullPcm = extractRes.mono
-            if (fullPcm.isEmpty()) throw IllegalStateException("Failed to extract audio stream from video.")
+            if (fullPcm.isEmpty()) throw IllegalStateException("No audio track found in selected video.")
             val cleanPcm = noiseSuppressor.suppressNoise(fullPcm)
+            DiagnosticLogger.log("AUDIO", "Extracted ${(cleanPcm.size / 16000.0)}s mono 16kHz audio ✓")
 
             // STAGE 2: Language Identification & Whisper Multilingual STT
             onProgress(
                 ProcessingState.Loading(
                     currentStage = 2,
                     totalStages = 7,
-                    step = "Whisper Neural STT: Identifying spoken language & transcribing…",
-                    progress = 0.28f
+                    step = "Whisper Neural STT: Identifying spoken language…",
+                    progress = 0.16f
                 )
             )
             val sourceLang = manualSourceLanguage ?: whisperEngine.identifyLanguage(cleanPcm)
-            DiagnosticLogger.log(TAG, "Source Spoken Language Selected: $sourceLang (Manual=$manualSourceLanguage)")
 
+            onProgress(
+                ProcessingState.Loading(
+                    currentStage = 2,
+                    totalStages = 7,
+                    step = "Whisper Neural STT: Transcribing dialogue segments…",
+                    progress = 0.24f
+                )
+            )
             val rawSegments = whisperEngine.transcribe(cleanPcm, sourceLang)
             if (rawSegments.isEmpty()) throw IllegalStateException("No speech dialogue detected in video.")
 
@@ -113,53 +123,65 @@ class VideoTranslationPipeline(
                 ProcessingState.Loading(
                     currentStage = 3,
                     totalStages = 7,
-                    step = "Analyzing acoustic pitch (F0) & speaker characteristics…",
-                    progress = 0.45f
+                    step = "Acoustic Pitch Tracking (F0 YIN): Verifying speaker characteristics…",
+                    progress = 0.40f
                 )
             )
             val genderSegments = genderClassifier.classifySegments(rawSegments, cleanPcm, fallbackGender)
             val primaryGender = genderSegments.firstOrNull()?.voiceGender ?: Gender.MALE
+            DiagnosticLogger.log("VOICE", "Detected Primary Voice Gender: $primaryGender ✓")
 
             // STAGE 4: NLLB-200 Multilingual Neural Translation
-            onProgress(
-                ProcessingState.Loading(
-                    currentStage = 4,
-                    totalStages = 7,
-                    step = "NLLB-200 Neural Translation across all language tracks…",
-                    progress = 0.62f
+            val totalSegs = genderSegments.size
+            val translatedSegments = mutableListOf<TranslationSegment>()
+
+            for ((idx, seg) in genderSegments.withIndex()) {
+                val progressVal = 0.48f + (0.20f * (idx.toFloat() / totalSegs.toFloat()))
+                onProgress(
+                    ProcessingState.Loading(
+                        currentStage = 4,
+                        totalStages = 7,
+                        step = "Neural Translation [${sourceLang.displayName}]: Segment ${idx + 1} of $totalSegs…",
+                        progress = progressVal
+                    )
                 )
-            )
-            val translatedSegments = translationPipeline.translateSegments(genderSegments, sourceLang)
+                // Translate segment into all target tracks
+                val translated = translationPipeline.translateSegments(listOf(seg), sourceLang)
+                translatedSegments.addAll(translated)
+            }
+            DiagnosticLogger.log("TRANSLATION", "All $totalSegs dialogue segments translated across Hindi, English & Telugu ✓")
 
             // STAGE 5: Gender-Matched Neural TTS Dubbing
             onProgress(
                 ProcessingState.Loading(
                     currentStage = 5,
                     totalStages = 7,
-                    step = "Synthesizing dubbed voice tracks with gender matching…",
-                    progress = 0.80f
+                    step = "Neural TTS: Synthesizing ${targetLanguage.displayName} voice tracks…",
+                    progress = 0.72f
                 )
             )
             val synthesizedSegments = ttsEngine.synthesizeSegments(translatedSegments, targetLanguage, renderedDir)
+            DiagnosticLogger.log("TTS", "Rendered ${synthesizedSegments.size} dubbed audio segments ✓")
 
             // STAGE 6: Lip-Sync Speed & Timing Alignment
             onProgress(
                 ProcessingState.Loading(
                     currentStage = 6,
                     totalStages = 7,
-                    step = "Synchronizing audio-video lip-sync and timing alignment…",
-                    progress = 0.92f
+                    step = "Synchronizing lip-sync timing & audio speed alignment…",
+                    progress = 0.88f
                 )
             )
             val finalSegments = synchronizer.synchronizeSegments(synthesizedSegments, renderedDir)
+            DiagnosticLogger.log("SYNC", "Lip-sync timing aligned across all segments ✓")
 
             // STAGE 7: Save to Cache & Persistent Video Library
             onProgress(
                 ProcessingState.Loading(
                     currentStage = 7,
                     totalStages = 7,
-                    step = "Finalizing video translation session…",
-                    progress = 0.98f
+                    step = "Finalizing & saving translation session…",
+                    progress = 0.96f
                 )
             )
             cache.saveRun(runId, finalSegments)
@@ -178,7 +200,16 @@ class VideoTranslationPipeline(
                 )
             )
 
-            DiagnosticLogger.log(TAG, "══════════ 100% OFFLINE NEURAL PIPELINE COMPLETED SUCCESSFULLY [Run: $runId] ══════════")
+            onProgress(
+                ProcessingState.Loading(
+                    currentStage = 7,
+                    totalStages = 7,
+                    step = "Translation complete! Ready for playback.",
+                    progress = 1.0f
+                )
+            )
+
+            DiagnosticLogger.log("PIPELINE", "══════════ 100% OFFLINE NEURAL PIPELINE COMPLETED [Run: $runId] ══════════")
             PipelineResult(
                 runId = runId,
                 detectedSourceLanguage = sourceLang,
@@ -186,10 +217,10 @@ class VideoTranslationPipeline(
                 segments = finalSegments
             )
         } catch (ce: CancellationException) {
-            DiagnosticLogger.log(TAG, "Pipeline cancelled by user.")
+            DiagnosticLogger.log("PIPELINE", "Pipeline cancelled by user.")
             throw ce
         } catch (e: Exception) {
-            DiagnosticLogger.log(TAG, "Pipeline exception: ${e.message}", e)
+            DiagnosticLogger.log("PIPELINE", "Pipeline failed: ${e.message}", e)
             throw e
         }
     }
