@@ -1,119 +1,172 @@
 # Video Translator (LinguaPlay) 🎬💬
 
-A native Android application built with Kotlin and Jetpack Compose that automatically translates Hindi video dialogue into **English** and **Telugu** while preserving the speaker's male/female voice tone, matching speech timing, and keeping the original background music track intact.
+A native Android application built with Kotlin and Jetpack Compose that provides **100% on-device, privacy-first, offline video dubbing and translation**. It translates spoken video dialogue into **English** and **Telugu** while preserving speaker gender, matching speech duration, and isolating the original background audio track — all processed locally on your phone without sending a single byte to the cloud.
+
+---
+
+## 🔒 Cloud vs. 100% On-Device: Why We Built LinguaPlay On-Device
+
+Modern cloud speech and translation APIs offer robust performance, but they introduce critical tradeoffs regarding privacy, ongoing costs, and cloud dependency. LinguaPlay is built with an **Edge AI & Privacy-First Philosophy**.
+
+### ☁️ Live Cloud API Pricing & Limits Landscape
+
+| Provider & Service | Free Tier Allowance | Paid Tier Rate | Payment & Regional Indian Support |
+|:---|:---|:---|:---|
+| **Google Cloud Translation API** | **500,000 chars/month** (Perpetual free tier, resets monthly) + $300 trial credit (90 days). | **$20 per 1M characters** (~$0.12 per 1,000 words) for standard NMT. | 💳 Credit card required on file.<br>✅ Full Indian language coverage (Hindi, Telugu, Tamil, etc.). |
+| **Google Cloud Speech-to-Text (STT)** | **60 minutes/month** (Perpetual free tier, resets monthly). | **$0.016 / minute** standard V2 recognition; **$0.003–$0.004 / min** for Dynamic Batch. | 💳 Credit card required on file.<br>✅ Full Indian language coverage. |
+| **Google Cloud Text-to-Speech (TTS)** | **0–4M chars/month** (Standard/WaveNet); **0–1M chars/month** (Chirp/Neural2/Studio). | **~$0.00003 / char** (~$30 per 1M characters) for premium neural voices. | 💳 Credit card required on file.<br>✅ Rich male/female voice packs. |
+| **Microsoft Azure Speech** | **5 hours total** (One-time trial allowance, not monthly recurring). | **$0.006 / min** (Batch), **$0.0167 / min** (Real-time). | 💳 Credit card required.<br>✅ Broad Indian language support (Hindi, Telugu, Tamil, Marathi, etc.). |
+| **AWS Transcribe** | **60 minutes/month** (Valid only during the 1st year). | **$0.024 / min** standard. | 💳 Credit card required.<br>✅ Supports Hindi, Telugu, Tamil, Marathi, Gujarati. |
+| **Deepgram** | Pay-as-you-go trial credit. | **$0.0043 – $0.0077 / min** (Lower per-minute rate). | ❌ Incomplete Indian coverage (Hindi/Tamil in beta, **No Telugu support**). |
+
+> [!NOTE]
+> For small personal test clips, cloud free tiers appear cost-effective (a 5-minute video uses only ~4,000–5,000 characters). However, cloud APIs enforce **mandatory credit card billing accounts**, introduce potential overage risk at scale, and mandate uploading private user video/audio across remote internet servers.
+
+---
+
+### 🛡️ The LinguaPlay Advantage: 100% Privacy & Unlimited Free Usage
+
+Instead of routing user data through external cloud servers, LinguaPlay embeds high-performance on-device AI engines (Vosk ASR, Whisper ONNX, Google ML Kit NMT, and Android Neural TTS):
+
+1. 🔐 **Absolute Privacy & Data Sovereignty**: Your video recordings, speech audio, and personal conversations **never leave your device**. No cloud storage, no server transmission, and no data profiling.
+2. ♾️ **Unlimited Usages ($N$ Videos)**: No monthly character caps, no 60-minute limits, no API keys, and no billing subscriptions. You can translate hundreds of videos without paying a cent.
+3. ✈️ **100% Offline Capability**: Runs anywhere — in remote areas, on flights, or in privacy-sensitive environments with zero internet required once models are bundled.
+4. ⚡ **Zero Per-Request Latency / Free Scalability**: All audio processing, pitch classification, and translation inference run locally utilizing hardware-accelerated DSP and neural runtimes.
 
 ---
 
 ## 🧭 Visual System Architecture
 
-Here is how a video is processed from raw input to fully dubbed output:
-
 ```mermaid
-flowchart LR
+flowchart TD
     %% Inputs
-    VIDEO["🎬 Input Video<br>(Hindi Speech + Music)"]
+    VIDEO["🎬 Input Video (Dialogue + Background Audio)"]
 
-    %% Phase 1: Audio Processing & Targeted Noise Removal
-    subgraph P1 ["1️⃣ Audio Extraction & Targeted Noise Filtering"]
-        direction TB
-        EXTRACT["🔊 Separate Audio Tracks"]
-        MUSIC["🎵 Preserved Music Track"]
-        SPEECH["🎙️ Raw Speech PCM"]
-        NOISE["🧹 3-Type Targeted DSP Noise Filter<br>(Fan Hum + Wind HPF + Horn Attenuation)"]
-
-        EXTRACT --> MUSIC
-        EXTRACT --> SPEECH
-        SPEECH --> NOISE
+    %% Mode Selection
+    subgraph S0 ["0️⃣ Mode Selection"]
+        MODE{"Mode Selector"}
+        AUTO["🤖 Automatic Detection Mode"]
+        MANUAL["👤 Manual Source Mode<br>(Select: Hindi / English / Telugu)"]
+        MODE -->|Auto| AUTO
+        MODE -->|Manual| MANUAL
     end
 
-    %% Phase 2: AI Speech & Multi-Signal Gender Analysis
-    subgraph P2 ["2️⃣ AI Speech & Gender Analysis"]
-        direction TB
-        STT["🗣️ Vosk Offline STT<br>(Recognizes Hindi Words)"]
-        PITCH["📊 Ensemble Gender Classifier<br>(F0 + Spectral Centroid + HNR)"]
-        SMOOTH["🔗 Temporal Consistency<br>(Smooths Isolated Outliers)"]
-
-        PITCH --> SMOOTH
+    %% Phase 1: Audio Extraction & DSP Noise Reduction
+    subgraph P1 ["1️⃣ Audio Extraction & Targeted DSP Filtering"]
+        EXTRACT["🔊 Split Mono Speech PCM & Background Track"]
+        NOISE["🧹 3-Tier Adaptive DSP Noise Filter<br>• Fan/AC Hum Adaptive Subtraction<br>• 90Hz Wind High-Pass Filter<br>• Horn Blast Energy Attenuation"]
+        EXTRACT --> NOISE
     end
 
-    %% Phase 3: Smart Translation & Self-Verification
-    subgraph P3 ["3️⃣ Neural Translation & Verification"]
-        direction TB
-        CLEAN["🧹 Disfluency Cleaner<br>(Stutter & Filler Removal)"]
-        CLUSTER["🧩 Contextual Sentence Grouping"]
-        TRANSLATE["🤖 ML Kit Neural Engine<br>(Translates to EN & TE)"]
-        VERIFY["🔄 Back-Translation Verification<br>(EN → HI Divergence Check)"]
-        RECLUSTER["⚡ Adaptive Boundary Re-Clustering<br>(Re-groups Low-Confidence Sentences)"]
-
-        CLEAN --> CLUSTER
-        CLUSTER --> TRANSLATE
-        TRANSLATE --> VERIFY
-        VERIFY --> RECLUSTER
+    %% Phase 2: Speech Recognition & Language Detection
+    subgraph P2 ["2️⃣ Acoustic Language Identification & STT"]
+        PROBE["🔍 Acoustic Dual-Probe (Vosk Dual-Model + Whisper ONNX Mel)"]
+        DICT["📚 ~500-Word Lexicon Dictionary Validation"]
+        STT["🗣️ Vosk Offline Acoustic STT<br>(Sentence Grouping & Alignment)"]
+        PROBE --> DICT
+        DICT --> STT
     end
 
-    %% Phase 4: Voice Synthesis & Video Playback
-    subgraph P4 ["4️⃣ Dubbed Audio & Video Sync"]
-        direction TB
-        VOICE["🎭 Select TTS Voice<br>(Male or Female Match)"]
-        TTS["🔊 Pre-Render Speech WAV"]
-        SPEED["⏱️ Lip-Sync Speed Match<br>(0.75x to 1.5x)"]
-        PLAYBACK["▶️ ExoPlayer Sync<br>(Dubbed Voice + Music)"]
-
-        VOICE --> TTS
-        TTS --> SPEED
-        SPEED --> PLAYBACK
+    %% Phase 3: Gender Verification & Pitch Ensemble
+    subgraph P3 ["3️⃣ Multi-Signal Ensemble Gender Verification"]
+        YIN["🎼 YIN Pitch Tracking (F0: 75–350 Hz)"]
+        SC["📊 Spectral Centroid (Vocal Brightness)"]
+        HNR["🔊 Harmonics-to-Noise Ratio (Voicing Periodicity)"]
+        SMOOTH["🔗 Temporal Sequence Smoothing"]
+        YIN --> SMOOTH
+        SC --> SMOOTH
+        HNR --> SMOOTH
     end
 
-    %% Main Pipeline Flow
-    VIDEO --> EXTRACT
-    NOISE --> STT
-    NOISE --> PITCH
-    STT --> CLUSTER
-    TRANSLATE --> VOICE
-    SMOOTH --> VOICE
-    MUSIC ==> PLAYBACK
+    %% Phase 4: Neural Translation & Verification
+    subgraph P4 ["4️⃣ On-Device Neural Translation (ML Kit)"]
+        DISFLUENCY["🧹 Disfluency & Stutter Cleaner"]
+        NMT["🤖 Google ML Kit Neural Translation"]
+        VERIFY["🔄 Back-Translation Divergence Verification"]
+        DISFLUENCY --> NMT
+        NMT --> VERIFY
+    end
+
+    %% Phase 5: Voice Synthesis & Video Playback
+    subgraph P5 ["5️⃣ Voice Synthesis & Playback Synchronization"]
+        VOICE["🎭 Gender-Matched Voice Mapping<br>(Male/Female Voice Packs)"]
+        SYNTH["🔊 Duration-Matched TTS Pre-Rendering<br>(0.75x – 1.5x Speed Match)"]
+        PLAY["▶️ ExoPlayer Playback Sync<br>(Dubbed Voice + Original Audio Muted)"]
+        VOICE --> SYNTH
+        SYNTH --> PLAY
+    end
+
+    %% Pipeline Connections
+    VIDEO --> S0
+    AUTO --> P1
+    MANUAL --> P1
+    NOISE --> P2
+    NOISE --> P3
+    P2 --> P4
+    P3 --> P5
+    P4 --> P5
 ```
 
 ---
 
 ## 💡 How Each Phase Works
 
-### 1️⃣ Audio Extraction & Targeted 3-Type Noise Removal
-- **Background Music Preservation**: Splits speech dialogue from background music so original soundtracks and sound effects are retained in the final video.
-- **Multi-Type Targeted DSP Noise Reduction**:
-  - **Fan / AC / Ambient Hum**: 512-point STFT multi-region stationary noise-floor spectral subtraction.
-  - **Wind / Air Rumble**: Low-frequency High-Pass Filter (HPF) zeroing frequencies below $90\text{ Hz}$.
-  - **Horn / Loud Transients**: Energy onset derivative ($\Delta E$) & tonal peak detection. Attenuates transient horn energy and passes a `transientMask` to exclude horn frames from corrupting $F_0$ pitch tracking.
+### 1️⃣ Mode Selection & Source Audio Handling
+- **Automatic Mode**: Automatically identifies whether the spoken dialogue is Hindi, English, or Telugu using an acoustic dual-probe and spectral formant analysis.
+- **Manual Mode**: Allows users to explicitly select the source language (Hindi, English, or Telugu) from interactive chips before uploading. The pipeline bypasses detection and proceeds directly with translation, gender verification, and dubbing.
 
-### 2️⃣ Speech Recognition & Multi-Signal Gender Analysis
-- **High-Precision Offline STT**: Uses the Vosk Hindi acoustic model to transcribe spoken words locally without internet.
-- **3-Signal Ensemble Gender Classifier**: Combines three independent acoustic signals per segment to accurately classify speaker gender:
-  - **F0 (Pitch)**: YIN autocorrelation for fundamental frequency estimation (with horn blast frame exclusion).
-  - **Spectral Centroid**: Center-of-mass of frequency spectrum — robust to vocal fry / creaky voice that corrupts F0 at phrase-final positions.
-  - **HNR (Harmonic-to-Noise Ratio)**: Measures voice periodicity. When HNR is low (creaky speech), the system automatically discounts F0 and relies more heavily on spectral centroid.
-- **Temporal Consistency Smoothing**: After per-segment classification, a smoothing pass corrects isolated low-confidence outliers that disagree with both neighboring segments, while preserving genuine multi-speaker transitions.
+### 2️⃣ Audio Extraction & Adaptive 3-Tier DSP Noise Reduction
+- **Dual-Stream Demuxing**: Isolates dialogue PCM audio for speech inference while managing audio mixing.
+- **Adaptive DSP Noise Reduction**:
+  - **Fan / AC / Ambient Hum**: Multi-region spectral subtraction dynamically scales over-subtraction ($\alpha = 1.05$ on clean audio to preserve $F_1/F_2$ formants, scaling up to $1.50$ on noisy audio).
+  - **Wind / Air Turbulence**: High-Pass Filter (HPF) zeroing frequencies below $90\text{ Hz}$.
+  - **Horn / Transient Spike Suppression**: Energy onset derivative ($\Delta E$) detection attenuates high-energy horn blasts and passes a `transientMask` to exclude distorted frames from pitch calculation.
 
-### 3️⃣ Disfluency Cleanup, Two-Tier Translation & Self-Verification
-- **Hindi Speech Disfluency Cleanup**: Cleans stutters (`"मैं मैं"` → `"मैं"`), hesitation fillers (`"उम्म"`, `"अहह"`, `"मतलब की"`), and false starts before NMT, while preserving expressive reaction words (`"वाह"`, `"अरे!"`, `"ओह"`) as standalone exclamation units.
-- **Full-Sentence Grammar Context**: Groups short phrase fragments into complete sentences before passing them to Google ML Kit, producing natural English and Telugu translations instead of choppy word-by-word dubs.
-- **Back-Translation Self-Verification**: Translates generated English text back to Hindi (EN $\rightarrow$ HI) and computes string edit distance divergence.
-- **Adaptive Sentence Boundary Re-Clustering**: For sentence clusters exceeding a divergence threshold ($>0.45$), the system automatically tests alternative sentence grouping boundaries and selects the translation with superior round-trip fidelity.
-- **Proportional Audio Mapping**: Maps translated full-sentence words back to precise audio time windows to preserve video lip-sync.
+### 3️⃣ Acoustic Speech Recognition & Language Detection
+- **Acoustic Dual-Probe**: Probes audio across Hindi and English Vosk models alongside 80-channel Whisper Log-Mel spectrograms.
+- **~500-Word Lexicon Dictionary Validation**: Validates recognized tokens against curated 500-word high-frequency dictionaries (verb conjugations, pronouns, postpositions, question words, and nouns) to eliminate phonetic false positives.
+- **Sentence Clustering**: Groups recognized word tokens into coherent sentences based on temporal pause thresholds ($\le 1.2\text{s}$) for contextual translation.
 
-### 4️⃣ Gender-Matched Voice Synthesis & Timing Sync
-- **Gender-Matched Voice Selection**: Dubs male speakers with deep male voices (`en-us-x-tpd` / `te-in-x-teg`) and female speakers with clear female voices (`en-us-x-iob` / `te-in-x-tee`).
-- **Dynamic Lip-Sync Matching**: Adjusts speech playback speed ($0.75\times$ to $1.5\times$) so translated sentences complete at the exact moment the speaker finishes talking.
-- **Instant Caching**: First run takes $\sim55-70$ seconds. Repeat plays and language switches are instant ($<50\text{ ms}$).
+### 4️⃣ Multi-Signal Ensemble Speaker Gender Verification
+To deliver realistic dubbing, LinguaPlay analyzes voice acoustics across three independent signals:
+- **Fundamental Frequency ($F_0$ Pitch)**: Evaluated using the **YIN autocorrelation algorithm** over a search range of $75\text{ Hz} - 350\text{ Hz}$ (excluding transient-masked horn frames).
+- **Spectral Centroid (SC)**: Computes the spectral center-of-mass to distinguish male vocal depth ($< 1800\text{ Hz}$) from female vocal brightness ($> 2200\text{ Hz}$), preventing misclassification caused by vocal fry or creaky voice.
+- **Harmonics-to-Noise Ratio (HNR)**: Quantifies vocal periodicity in decibels ($dB$). When HNR drops in unvoiced/creaky frames, the system downweights $F_0$ in favor of spectral centroid.
+- **Temporal Consistency Smoothing**: Post-processes per-segment classifications to smooth out isolated momentary anomalies while respecting genuine speaker transitions.
+
+### 5️⃣ Disfluency Cleanup, Neural Translation & Self-Verification
+- **Disfluency Cleaner**: Strips conversational stutters (`"मैं मैं"` $\rightarrow$ `"मैं"`), filler sounds (`"umm"`, `"uhh"`, `"मतलब की"`), and false starts, while preserving expressive conversational exclamations (`"वाह"`, `"अरे!"`, `"ओह"`).
+- **On-Device Neural Machine Translation**: Uses **Google ML Kit NMT** to translate complete contextual sentences between Hindi, English, and Telugu.
+- **Back-Translation Self-Verification**: Checks translation consistency by translating English back to Hindi (EN $\rightarrow$ HI) and measuring string edit distance divergence.
+
+### 6️⃣ Gender-Matched Voice Synthesis & Playback Lip-Sync
+- **Voice Mapping**: Synthesizes speech using gender-matched neural TTS voices (e.g., `en-us-x-tpd` / `hi-in-x-hie` for male speakers; `en-us-x-iob` / `hi-in-x-hic` for female speakers).
+- **Duration Matching**: Calculates playback speed adjustment ratios ($0.75\times$ to $1.5\times$) to align translated voice durations with the original speech timestamps.
+- **ExoPlayer Synchronized Playback**: Automatically mutes the original video audio track (`volume = 0.0f`) during dubbed playback to prevent audio bleed-through, with instant switching between dubbed tracks ($<50\text{ ms}$).
+
+---
+
+## ⚠️ Current Limitations & Roadmap
+
+While LinguaPlay delivers high performance for Hindi and English video translation on-device, please review the following limitations:
+
+- 🚧 **Telugu Source Audio Limitation**:
+  - Translating **into** Telugu (Hindi $\rightarrow$ Telugu and English $\rightarrow$ Telugu) is fully supported with gender-matched voice dubbing.
+  - However, processing video with **Telugu as the original spoken audio** is currently in active development and not yet working reliably. On-device acoustic models and offline Dravidian language vocabulary sets for native Telugu STT require further optimization. Full support for Telugu source speech will be introduced in an upcoming release.
+- 🔊 **Extreme Overlapping Noise**: While DSP filters remove stationary fan hum and wind rumble, loud vehicle horns that directly overlap speech formants at high sound pressure levels may result in slight speech attenuation.
+- 📱 **On-Device Compute Constraints**: Processing speed depends on the device CPU/NPU capabilities (typically takes $\sim 45-65\text{s}$ for the initial pass of a multi-minute video).
 
 ---
 
 ## 🛠️ How to Build and Run the Application
 
 ### 📋 Prerequisites
-1. **Android Studio**: Android Studio Koala / Ladybug / Jellyfish (2024.1+).
+1. **Android Studio**: Android Studio Koala / Ladybug / Meerkat (2024.1+).
 2. **JDK Version**: Java 17 (OpenJDK 17).
 3. **Android SDK**: API Level 34 (Android 14) SDK installed.
-4. **Physical Device / Emulator**: Android 8.0+ (API Level 26+) device with USB Debugging enabled.
+4. **Physical Device / Emulator**: Android 8.0+ (API Level 26+) with USB Debugging enabled.
+
+---
 
 ### 📥 1. Clone the Repository
 ```bash
@@ -121,9 +174,12 @@ git clone https://github.com/SyedSaad8008/Video-Translator.git
 cd Video-Translator
 ```
 
-### 🏗️ 2. Build the Debug APK via Command Line
-Run Gradle wrapper to assemble the debug APK:
-- **Windows (PowerShell/CMD)**:
+---
+
+### 🏗️ 2. Build the Debug APK
+Compile the project using the Gradle wrapper:
+
+- **Windows (PowerShell / CMD)**:
   ```powershell
   .\gradlew.bat assembleDebug
   ```
@@ -131,41 +187,48 @@ Run Gradle wrapper to assemble the debug APK:
   ```bash
   ./gradlew assembleDebug
   ```
-The compiled APK will be output at:
+
+The compiled APK will be generated at:
 `app/build/outputs/apk/debug/app-debug.apk`
 
+---
+
 ### 📲 3. Install and Launch on Device
-Connect your Android phone via USB (with USB Debugging enabled) and run:
+Connect your Android phone via USB and run:
 ```bash
 adb install -r -d app/build/outputs/apk/debug/app-debug.apk
 adb shell am start -n com.example.videotranslator/.MainActivity
 ```
 
-### 🚀 4. How to Use the App
-1. Open **LinguaPlay (Video Translator)**.
-2. Tap **"Select Video from Device"** and pick any MP4/MKV video containing Hindi speech.
-3. Wait for the initial AI processing ($\sim50-65\text{s}$) to extract audio, apply noise reduction, transcribe speech, translate sentences, and synthesize gender-matched voices.
-4. Switch between **English** and **Telugu** audio tracks instantly using the language selector pill buttons!
+---
+
+### 🚀 4. How to Use LinguaPlay
+1. Open **LinguaPlay**.
+2. Select your desired mode:
+   - **Automatic**: The AI automatically detects Hindi, English, or Telugu spoken dialogue.
+   - **Manual**: Choose the video's spoken language directly using the language chips.
+3. Tap **"Select Video from Device"** and pick an MP4/MKV video.
+4. Allow the on-device AI pipeline ($\sim 45-65\text{s}$) to extract audio, filter noise, transcribe, translate, verify gender, and pre-render voice tracks.
+5. Tap the **Language Pill Buttons** (हिंदी, English, తెలుగు) to instantly switch between dubbed audio tracks!
 
 ---
 
 ## ⚡ Performance Summary
 
-| Action | Execution Time | Note |
+| Action | Execution Time | Notes |
 |:---|:---:---|:---|
-| **First Video Load** | **`~55 – 70 seconds`** | Full extraction, noise filtering, AI translation, pitch analysis, and TTS pre-rendering. |
-| **Language Switch** | **`< 50 ms (Instant)`** | Swaps between English and Telugu instantly using local pre-rendered audio cache. |
-| **Re-opening App** | **`< 50 ms (Instant)`** | Loads previously translated video sessions directly from storage. |
+| **First Video Processing** | **`~45 – 65 seconds`** | Full on-device extraction, DSP filtering, Vosk STT, ML Kit translation, YIN gender analysis, and TTS pre-rendering. |
+| **Language Track Switching** | **`< 50 ms (Instant)`** | Swaps between original, English, and Telugu audio instantly from local pre-rendered audio cache. |
+| **Past Video Library Reload** | **`< 50 ms (Instant)`** | Loads previously translated video sessions directly from persistent storage without re-processing. |
 
 ---
 
 ## 📱 System Requirements & Notes
 
-- **Android Version**: Android 8.0 (API Level 26) or higher.
-- **Supported Languages**: Hindi (Source Audio) $\rightarrow$ English & Telugu (Target Dubs).
-- **TTS Engine**: Google Speech Services (pre-installed on standard Android devices).
-- **Voice Remediation**: Includes an active in-app prompt launching `ACTION_INSTALL_TTS_DATA` if a device lacks installed voice packs.
-- **Acoustic Physical Limits Note**: For loud vehicle horns directly overlapping speech at high power, spectral attenuation reduces horn noise and excludes horn frames from pitch tracking, but cannot 100% disentangle identical frequency overlaps without slight vocal attenuation.
+- **Minimum OS**: Android 8.0 (API Level 26) or higher.
+- **Target OS**: Android 14 (API Level 34).
+- **TTS Engine**: Google Speech Services (pre-installed on standard Android devices). An active in-app prompt will appear if your device requires additional voice data packs.
+- **Storage**: ~150 MB for bundled offline models and temporary audio caching.
 
 ---
 
