@@ -1,20 +1,19 @@
 package com.example.videotranslator.ai.speech
 
-import kotlin.math.abs
 import kotlin.math.max
 
 /**
  * Energy & Spectral Voice Activity Detection (VAD) Speech Chunker with Word Boundary Padding.
- * Produces clean speech intervals with startMs and endMs timestamps without clipping word boundaries.
+ * Preserves complete conversational sentences, low-volume words, and subtle phonetic transitions.
  */
 class AudioSegmenter(
     private val frameSizeMs: Int = 30,
     private val sampleRate: Int = 16_000,
-    private val minSpeechDurationMs: Long = 350L,
-    private val maxSpeechDurationMs: Long = 9_000L,
-    private val maxSilenceDurationMs: Long = 500L,
-    private val preSpeechPaddingMs: Long = 200L,
-    private val postSpeechPaddingMs: Long = 250L
+    private val minSpeechDurationMs: Long = 250L,
+    private val maxSpeechDurationMs: Long = 15_000L,
+    private val maxSilenceDurationMs: Long = 800L,
+    private val preSpeechPaddingMs: Long = 300L,
+    private val postSpeechPaddingMs: Long = 350L
 ) {
 
     data class SpeechInterval(
@@ -48,12 +47,13 @@ class AudioSegmenter(
         val avgEnergy = (sumEnergy / numFrames).toFloat()
         val sortedEnergies = energies.clone().apply { sort() }
         val noiseFloor = sortedEnergies[(numFrames * 0.15f).toInt()]
-        val speechThreshold = max(noiseFloor * 1.8f, avgEnergy * 0.35f).coerceAtLeast(150f)
+        // Low threshold so quiet syllables, unvoiced consonants, and delicate words are 100% preserved
+        val speechThreshold = max(noiseFloor * 1.35f, 60f).coerceAtMost(avgEnergy * 0.35f)
 
         // 2. Classify voiced vs unvoiced frames
         val isVoiced = BooleanArray(numFrames) { i -> energies[i] >= speechThreshold }
 
-        // 3. Form contiguous speech intervals with pause merging
+        // 3. Form contiguous speech intervals with natural pause tolerance
         val intervals = mutableListOf<SpeechInterval>()
         var speechStartFrame = -1
         var silenceCount = 0
@@ -82,7 +82,7 @@ class AudioSegmenter(
             addIntervalIfValid(pcm, speechStartFrame, numFrames - 1, samplesPerFrame, intervals)
         }
 
-        // Fallback: If no segments detected (low level), wrap full audio in single segment
+        // Fallback: If no segments detected, wrap full audio in single continuous segment
         if (intervals.isEmpty()) {
             intervals.add(
                 SpeechInterval(
