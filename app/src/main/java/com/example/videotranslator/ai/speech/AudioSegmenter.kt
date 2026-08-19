@@ -4,15 +4,17 @@ import kotlin.math.abs
 import kotlin.math.max
 
 /**
- * Energy & Spectral Voice Activity Detection (VAD) Speech Chunker.
- * Produces clean, non-overlapping speech intervals with startMs and endMs timestamps.
+ * Energy & Spectral Voice Activity Detection (VAD) Speech Chunker with Word Boundary Padding.
+ * Produces clean speech intervals with startMs and endMs timestamps without clipping word boundaries.
  */
 class AudioSegmenter(
     private val frameSizeMs: Int = 30,
     private val sampleRate: Int = 16_000,
-    private val minSpeechDurationMs: Long = 400L,
-    private val maxSpeechDurationMs: Long = 8_000L,
-    private val maxSilenceDurationMs: Long = 600L
+    private val minSpeechDurationMs: Long = 350L,
+    private val maxSpeechDurationMs: Long = 9_000L,
+    private val maxSilenceDurationMs: Long = 500L,
+    private val preSpeechPaddingMs: Long = 200L,
+    private val postSpeechPaddingMs: Long = 250L
 ) {
 
     data class SpeechInterval(
@@ -46,7 +48,7 @@ class AudioSegmenter(
         val avgEnergy = (sumEnergy / numFrames).toFloat()
         val sortedEnergies = energies.clone().apply { sort() }
         val noiseFloor = sortedEnergies[(numFrames * 0.15f).toInt()]
-        val speechThreshold = max(noiseFloor * 2.2f, avgEnergy * 0.40f).coerceAtLeast(180f)
+        val speechThreshold = max(noiseFloor * 1.8f, avgEnergy * 0.35f).coerceAtLeast(150f)
 
         // 2. Classify voiced vs unvoiced frames
         val isVoiced = BooleanArray(numFrames) { i -> energies[i] >= speechThreshold }
@@ -101,14 +103,20 @@ class AudioSegmenter(
         samplesPerFrame: Int,
         outList: MutableList<SpeechInterval>
     ) {
-        val startSample = (startFrame * samplesPerFrame).coerceIn(0, pcm.size - 1)
-        val endSample = ((endFrame + 1) * samplesPerFrame).coerceIn(startSample + 1, pcm.size)
-        val durationMs = ((endSample - startSample) * 1000L) / sampleRate
+        val padStartSamples = ((preSpeechPaddingMs * sampleRate) / 1000L).toInt()
+        val padEndSamples = ((postSpeechPaddingMs * sampleRate) / 1000L).toInt()
+
+        val rawStartSample = startFrame * samplesPerFrame
+        val rawEndSample = (endFrame + 1) * samplesPerFrame
+
+        val paddedStartSample = (rawStartSample - padStartSamples).coerceIn(0, pcm.size - 1)
+        val paddedEndSample = (rawEndSample + padEndSamples).coerceIn(paddedStartSample + 1, pcm.size)
+        val durationMs = ((paddedEndSample - paddedStartSample) * 1000L) / sampleRate
 
         if (durationMs >= minSpeechDurationMs) {
-            val chunkPcm = pcm.copyOfRange(startSample, endSample)
-            val startMs = (startSample * 1000L) / sampleRate
-            val endMs = (endSample * 1000L) / sampleRate
+            val chunkPcm = pcm.copyOfRange(paddedStartSample, paddedEndSample)
+            val startMs = (paddedStartSample * 1000L) / sampleRate
+            val endMs = (paddedEndSample * 1000L) / sampleRate
             outList.add(SpeechInterval(startMs = startMs, endMs = endMs, pcm = chunkPcm))
         }
     }

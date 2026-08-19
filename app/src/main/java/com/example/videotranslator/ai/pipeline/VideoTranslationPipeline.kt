@@ -2,8 +2,11 @@ package com.example.videotranslator.ai.pipeline
 
 import android.content.Context
 import android.net.Uri
+import com.example.videotranslator.audio.AdaptiveAudioEnhancer
 import com.example.videotranslator.audio.AudioExtractor
-import com.example.videotranslator.audio.NoiseSuppressor
+import com.example.videotranslator.audio.AudioQualityAnalyzer
+import com.example.videotranslator.audio.AudioQualityReport
+import com.example.videotranslator.audio.NoiseLevel
 import com.example.videotranslator.ai.speech.WhisperEngine
 import com.example.videotranslator.ai.translation.TranslationPipeline
 import com.example.videotranslator.ai.tts.AudioSynchronizer
@@ -33,7 +36,7 @@ data class PipelineResult(
 
 /**
  * 7-Stage End-to-End On-Device Video Translation Pipeline Orchestrator.
- * 100% Offline • Zero Cloud • Native Acoustic STT, Neural Translation, Gender-Matched Dubbing.
+ * 100% Offline • Real-World Audio Recovery • Zero Cloud • Native Acoustic STT, Neural Translation, Gender-Matched Dubbing.
  */
 class VideoTranslationPipeline(
     private val context: Context,
@@ -42,7 +45,8 @@ class VideoTranslationPipeline(
 ) {
 
     private val audioExtractor = AudioExtractor(context)
-    private val noiseSuppressor = NoiseSuppressor()
+    private val qualityAnalyzer = AudioQualityAnalyzer()
+    private val adaptiveEnhancer = AdaptiveAudioEnhancer()
     private val whisperEngine = WhisperEngine(context)
     private val genderClassifier = VoiceGenderClassifier()
     private val translationPipeline = TranslationPipeline(context)
@@ -78,35 +82,47 @@ class VideoTranslationPipeline(
         val renderedDir = cache.renderedAudioDirForRun(runId)
 
         try {
-            // STAGE 1: Audio Extraction & Voice Isolation
+            // STAGE 1: Audio Extraction & Quality Analysis (Preserving Original Audio 100% Untouched)
             onProgress(
                 ProcessingState.Loading(
                     currentStage = 1,
                     totalStages = 7,
-                    step = "Extracting audio track & isolating voice dialogue…",
+                    step = "Extracting original audio track & analyzing acoustic environment…",
                     progress = 0.08f
                 )
             )
             val extractRes = audioExtractor.extractToFiles(videoUri, pcmFile, instrumentalFile)
-            val fullPcm = extractRes.mono
-            if (fullPcm.isEmpty()) throw IllegalStateException("No audio track found in selected video.")
-            val cleanPcm = noiseSuppressor.suppressNoise(fullPcm)
-            DiagnosticLogger.log("AUDIO", "Extracted ${(cleanPcm.size / 16000.0)}s mono 16kHz audio ✓")
+            val rawPcm = extractRes.mono
+            if (rawPcm.isEmpty()) throw IllegalStateException("No audio track found in selected video.")
+            DiagnosticLogger.log("AUDIO", "Extracted ${(rawPcm.size / 16000.0)}s mono 16kHz original audio (preserved untouched) ✓")
 
-            // STAGE 2: Language Identification & Whisper Multilingual STT
+            // Real-time Acoustic Environment & Noise Quality Analysis
+            val qualityReport = qualityAnalyzer.analyze(rawPcm)
+
+            onProgress(
+                ProcessingState.Loading(
+                    currentStage = 1,
+                    totalStages = 7,
+                    step = "Applying adaptive speech enhancement (SNR: ${"%.1f".format(qualityReport.snrDb)}dB)…",
+                    progress = 0.12f
+                )
+            )
+            var enhancedSpeechAudio = adaptiveEnhancer.enhance(rawPcm, qualityReport, attemptLevel = 1)
+
+            // STAGE 2: Language Identification & Whisper Multilingual STT with Recovery Strategy
             onProgress(
                 ProcessingState.Loading(
                     currentStage = 2,
                     totalStages = 7,
                     step = "Whisper Neural STT: Identifying spoken language…",
-                    progress = 0.16f
+                    progress = 0.18f
                 )
             )
             val sourceLang = if (manualSourceLanguage != null) {
                 DiagnosticLogger.log("LANG_DETECT", "▶ Manual Source Language Override: ${manualSourceLanguage.displayName} (${manualSourceLanguage.name}) ✓")
                 manualSourceLanguage
             } else {
-                whisperEngine.identifyLanguage(cleanPcm)
+                whisperEngine.identifyLanguage(enhancedSpeechAudio)
             }
 
             onProgress(
@@ -117,8 +133,26 @@ class VideoTranslationPipeline(
                     progress = 0.24f
                 )
             )
-            val rawSegments = whisperEngine.transcribe(cleanPcm, sourceLang)
-            if (rawSegments.isEmpty()) throw IllegalStateException("No speech dialogue detected in video.")
+
+            // Attempt 1: Standard Adaptive Speech Recognition
+            var rawSegments = whisperEngine.transcribe(enhancedSpeechAudio, sourceLang)
+
+            // Multi-Attempt Recovery for Difficult / Camera / Reverberant / Heavy Noise Audio
+            if (rawSegments.isEmpty() || rawSegments.all { it.sourceText.isBlank() }) {
+                DiagnosticLogger.log("STT", "▶ Speech extraction empty on Attempt 1. Retrying with Level 2 Dereverberation & Noise Suppression…")
+                enhancedSpeechAudio = adaptiveEnhancer.enhance(rawPcm, qualityReport, attemptLevel = 2)
+                rawSegments = whisperEngine.transcribe(enhancedSpeechAudio, sourceLang)
+            }
+
+            if (rawSegments.isEmpty() || rawSegments.all { it.sourceText.isBlank() }) {
+                DiagnosticLogger.log("STT", "▶ Speech extraction empty on Attempt 2. Retrying with Level 3 Vocal Formant Isolation…")
+                enhancedSpeechAudio = adaptiveEnhancer.enhance(rawPcm, qualityReport, attemptLevel = 3)
+                rawSegments = whisperEngine.transcribe(enhancedSpeechAudio, sourceLang)
+            }
+
+            if (rawSegments.isEmpty()) {
+                throw IllegalStateException("Speech recognition confidence is low. Unable to extract audible dialogue from this recording.")
+            }
 
             // STAGE 3: Voice Characteristic & Pitch Gender Verification
             onProgress(
@@ -129,7 +163,7 @@ class VideoTranslationPipeline(
                     progress = 0.40f
                 )
             )
-            val genderSegments = genderClassifier.classifySegments(rawSegments, cleanPcm, fallbackGender)
+            val genderSegments = genderClassifier.classifySegments(rawSegments, enhancedSpeechAudio, fallbackGender)
             val primaryGender = genderSegments.firstOrNull()?.voiceGender ?: Gender.MALE
             DiagnosticLogger.log("VOICE", "Detected Primary Voice Gender: $primaryGender ✓")
 
