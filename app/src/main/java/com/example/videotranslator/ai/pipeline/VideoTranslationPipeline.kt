@@ -167,11 +167,18 @@ class VideoTranslationPipeline(
             }
 
             if (chosenSegments.isEmpty() || chosenSegments.all { it.sourceText.isBlank() }) {
-                throw IllegalStateException("Speech recognition produced no text for ${sourceLang.displayName} audio. Please check video audio quality.")
+                throw IllegalStateException("ASR FAILURE: Speech recognition produced no text for ${sourceLang.displayName} audio. Please check video audio quality.")
             }
 
             val fullTranscript = chosenSegments.joinToString(" ") { it.sourceText }
-            DiagnosticLogger.log("STT", "Complete ${sourceLang.displayName} Transcript: \"$fullTranscript\" ✓")
+            val wordCount = fullTranscript.split("\\s+".toRegex()).count { it.isNotBlank() }
+            if (audioDurationSec >= 8.0 && wordCount <= 1) {
+                DiagnosticLogger.log(
+                    "PIPELINE",
+                    "⚠️ ASR LOW COVERAGE WARNING: Audio is ${"%.1f".format(audioDurationSec)}s but only $wordCount word (\"$fullTranscript\") recognized. Speech coverage is too low for high-quality dubbing."
+                )
+            }
+            DiagnosticLogger.log("STT", "Complete ${sourceLang.displayName} Transcript ($wordCount words): \"$fullTranscript\" ✓")
 
             // MANDATORY TELUGU ASR DIAGNOSTIC REPORT
             DiagnosticLogger.log("TELUGU_DIAGNOSTIC", """
@@ -248,6 +255,18 @@ Pristine raw audio was previously attenuated by multi-band subtraction, and Kald
                     )
                 )
                 synthesizedSegments = ttsEngine.synthesizeSegments(synthesizedSegments, tLang, renderedDir)
+            }
+
+            // STAGE 5 DIAGNOSTIC TRACING: Trace TTS audio files and loudness (Part 19)
+            for (seg in synthesizedSegments) {
+                val audioPath = seg.audioFilePath
+                if (audioPath.isNotBlank()) {
+                    val aFile = File(audioPath)
+                    DiagnosticLogger.log(
+                        "TTS_TRACE",
+                        "TTS Segment [${seg.id}]: Target=${targetLanguage.name}, Text=\"${seg.english.ifBlank { seg.hindi.ifBlank { seg.telugu } }}\", File=${aFile.name}, Size=${aFile.length()}B, Valid=${aFile.exists() && aFile.length() > 44}"
+                    )
+                }
             }
             DiagnosticLogger.log("TTS", "Rendered dubbed audio segments for target languages ✓")
 

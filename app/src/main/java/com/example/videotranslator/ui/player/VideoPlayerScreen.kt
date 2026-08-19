@@ -105,6 +105,7 @@ fun VideoPlayerScreen(
     var showLogSheet        by remember { mutableStateOf(false) }
     var showLibrarySheet    by remember { mutableStateOf(false) }
     var showBenchmarkSheet  by remember { mutableStateOf(false) }
+    var showAsrBenchmarkSheet by remember { mutableStateOf(false) }
     var detectionMode       by remember { mutableStateOf(if (manualSourceLang != null) "manual" else "auto") }
     var manualLanguage    by remember { mutableStateOf(manualSourceLang ?: Language.HINDI) }
 
@@ -153,6 +154,7 @@ fun VideoPlayerScreen(
             // Clean Header
             CleanHeader(
                 onOpenBenchmark = { showBenchmarkSheet = true },
+                onOpenAsrBenchmark = { showAsrBenchmarkSheet = true },
                 onOpenLibrary = { showLibrarySheet = true },
                 onOpenDiagnostics = { showLogSheet = true }
             )
@@ -316,6 +318,13 @@ fun VideoPlayerScreen(
                 ttsManager = viewModel.ttsManager
             )
         }
+
+        if (showAsrBenchmarkSheet) {
+            com.example.videotranslator.ui.benchmark.AsrBenchmarkSheet(
+                onDismiss = { showAsrBenchmarkSheet = false },
+                currentVideoName = videoUri?.lastPathSegment ?: "Uploaded Video"
+            )
+        }
     }
 }
 
@@ -324,6 +333,7 @@ fun VideoPlayerScreen(
 @Composable
 private fun CleanHeader(
     onOpenBenchmark: () -> Unit,
+    onOpenAsrBenchmark: () -> Unit,
     onOpenLibrary: () -> Unit,
     onOpenDiagnostics: () -> Unit
 ) {
@@ -361,8 +371,9 @@ private fun CleanHeader(
             }
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            HeaderIconButton(Icons.Default.Build, "Benchmark & Test", onOpenBenchmark)
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            HeaderIconButton(Icons.Default.PlayArrow, "ASR Benchmark", onOpenAsrBenchmark)
+            HeaderIconButton(Icons.Default.Build, "NMT Benchmark", onOpenBenchmark)
             HeaderIconButton(Icons.AutoMirrored.Filled.List, "Library", onOpenLibrary)
             HeaderIconButton(Icons.Default.Info, "Diagnostics", onOpenDiagnostics)
         }

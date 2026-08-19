@@ -5,133 +5,156 @@ import com.example.videotranslator.model.Language
 import com.example.videotranslator.util.DiagnosticLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
 
 private const val TAG = "TranslationTestSuite"
 
 /**
- * Automated Verification Test Suite for On-Device 6-Way Multilingual Translation Engine.
- * Tests:
- *  1. Hindi -> English
- *  2. Telugu -> English
- *  3. English -> Hindi
- *  4. English -> Telugu
- *  5. Telugu -> Hindi
- *  6. Hindi -> Telugu
- *  7. Hindustani / Urdu mixed vocabulary (ज़रूरी, इजाज़त, मोहब्बत, ज़िंदगी, सवाल, जवाब)
- *  8. Long multi-clause conversational sentences
+ * Automated Verification & Regression Suite for On-Device Translation.
+ * Tests all 6 directions (HI ↔ EN ↔ TE) and exports results to translation_benchmark_results.json.
  */
 class TranslationTestSuite(private val context: Context) {
 
     private val engine = NllbTranslationEngine(context)
 
+    data class TestCase(
+        val name: String,
+        val src: Language,
+        val tgt: Language,
+        val input: String,
+        val expectedKeywords: List<String> = emptyList()
+    )
+
     data class TestResult(
-        val testName: String,
-        val sourceLanguage: Language,
-        val targetLanguage: Language,
-        val inputText: String,
-        val outputText: String,
-        val isSuccess: Boolean
+        val testCase: TestCase,
+        val output: String,
+        val passed: Boolean,
+        val latencyMs: Long,
+        val message: String
     )
 
     suspend fun runAllTests(): List<TestResult> = withContext(Dispatchers.IO) {
-        DiagnosticLogger.log(TAG, "══════════ STARTING ON-DEVICE TRANSLATION TEST SUITE ══════════")
+        DiagnosticLogger.log(TAG, "══════════ STARTING 6-WAY NEURAL TRANSLATION BENCHMARK ══════════")
         engine.load()
 
         val tests = listOf(
             TestCase(
-                name = "Hindi to English Basic",
+                name = "Hindi to English Direct",
                 src = Language.HINDI,
                 tgt = Language.ENGLISH,
                 input = "मैं आज कॉलेज जा रहा हूँ।"
             ),
             TestCase(
-                name = "Telugu to English Basic",
-                src = Language.TELUGU,
-                tgt = Language.ENGLISH,
-                input = "నేను ఈరోజు కాలేజీకి వెళ్తున్నాను."
-            ),
-            TestCase(
-                name = "English to Hindi Basic",
-                src = Language.ENGLISH,
-                tgt = Language.HINDI,
-                input = "I am going to college today."
-            ),
-            TestCase(
-                name = "English to Telugu Basic",
-                src = Language.ENGLISH,
-                tgt = Language.TELUGU,
-                input = "I am going to college today."
-            ),
-            TestCase(
-                name = "Telugu to Hindi Direct/Pivot",
-                src = Language.TELUGU,
-                tgt = Language.HINDI,
-                input = "నేను ఈరోజు కాలేజీకి వెళ్తున్నాను."
-            ),
-            TestCase(
-                name = "Hindi to Telugu Direct/Pivot",
+                name = "Hindi to Telugu Pivot",
                 src = Language.HINDI,
                 tgt = Language.TELUGU,
                 input = "मैं आज कॉलेज जा रहा हूँ।"
             ),
             TestCase(
-                name = "Hindustani with Urdu Vocabulary (इजाज़त / ज़रूरी)",
+                name = "Telugu to English Direct",
+                src = Language.TELUGU,
+                tgt = Language.ENGLISH,
+                input = "నేను ఈరోజు కాలేజీకి వెళ్తున్నాను."
+            ),
+            TestCase(
+                name = "Telugu to Hindi Pivot",
+                src = Language.TELUGU,
+                tgt = Language.HINDI,
+                input = "నేను ఈరోజు కాలేజీకి వెళ్తున్నాను."
+            ),
+            TestCase(
+                name = "English to Hindi Direct",
+                src = Language.ENGLISH,
+                tgt = Language.HINDI,
+                input = "I am going to college today."
+            ),
+            TestCase(
+                name = "English to Telugu Direct",
+                src = Language.ENGLISH,
+                tgt = Language.TELUGU,
+                input = "I am going to college today."
+            ),
+            TestCase(
+                name = "Hindustani with Urdu Vocabulary",
                 src = Language.HINDI,
                 tgt = Language.ENGLISH,
                 input = "मुझे इस काम की इजाज़त चाहिए, यह बहुत ज़रूरी सवाल है।"
             ),
             TestCase(
-                name = "Long Multi-Clause Sentence",
-                src = Language.HINDI,
+                name = "Telugu Complex Sentence",
+                src = Language.TELUGU,
                 tgt = Language.ENGLISH,
-                input = "वह वहाँ गया था और उसने मुझे फोन किया ताकि हम आगे की योजना बना सकें।"
+                input = "హలో నేను సాద్ మీరు ఎవరు మీ పేరు ఏమిటి"
             )
         )
 
         val results = mutableListOf<TestResult>()
 
         for (test in tests) {
+            val startTime = System.currentTimeMillis()
             try {
                 val output = engine.translate(test.input, test.src, test.tgt)
-                val pass = output.isNotBlank() && output != test.input
+                val elapsed = System.currentTimeMillis() - startTime
+                val pass = output.isNotBlank() && output.trim() != test.input.trim()
                 DiagnosticLogger.log(
                     TAG,
-                    "TEST [${test.name}] [${test.src.name} -> ${test.tgt.name}]:\n  IN: \"${test.input}\"\n  OUT: \"$output\"\n  STATUS: ${if (pass) "PASS ✓" else "FAIL ✗"}"
+                    "TEST [${test.name}] [${test.src.name} -> ${test.tgt.name}]:\n  IN:  \"${test.input}\"\n  OUT: \"$output\"\n  LATENCY: ${elapsed}ms | STATUS: ${if (pass) "PASS ✓" else "FAIL ✗"}"
                 )
                 results.add(
                     TestResult(
-                        testName = test.name,
-                        sourceLanguage = test.src,
-                        targetLanguage = test.tgt,
-                        inputText = test.input,
-                        outputText = output,
-                        isSuccess = pass
+                        testCase = test,
+                        output = output,
+                        passed = pass,
+                        latencyMs = elapsed,
+                        message = if (pass) "Verified translation output" else "Output matches input or empty"
                     )
                 )
             } catch (e: Exception) {
-                DiagnosticLogger.log(TAG, "TEST [${test.name}] EXCEPTION: ${e.message}", e)
+                val elapsed = System.currentTimeMillis() - startTime
+                DiagnosticLogger.log(TAG, "TEST [${test.name}] ERROR: ${e.message}")
                 results.add(
                     TestResult(
-                        testName = test.name,
-                        sourceLanguage = test.src,
-                        targetLanguage = test.tgt,
-                        inputText = test.input,
-                        outputText = "ERROR: ${e.message}",
-                        isSuccess = false
+                        testCase = test,
+                        output = "",
+                        passed = false,
+                        latencyMs = elapsed,
+                        message = "Exception: ${e.message}"
                     )
                 )
             }
         }
 
-        val passedCount = results.count { it.isSuccess }
-        DiagnosticLogger.log(TAG, "══════════ TEST SUITE COMPLETE: $passedCount/${results.size} PASSED ══════════")
+        exportJson(results)
         results
     }
 
-    private data class TestCase(
-        val name: String,
-        val src: Language,
-        val tgt: Language,
-        val input: String
-    )
+    private fun exportJson(results: List<TestResult>) {
+        try {
+            val json = JSONObject()
+            json.put("benchmark_timestamp", System.currentTimeMillis())
+            json.put("total_tests", results.size)
+            json.put("passed_tests", results.count { it.passed })
+
+            val testsArray = JSONArray()
+            for (res in results) {
+                val tObj = JSONObject()
+                tObj.put("test_name", res.testCase.name)
+                tObj.put("source_language", res.testCase.src.name)
+                tObj.put("target_language", res.testCase.tgt.name)
+                tObj.put("input_text", res.testCase.input)
+                tObj.put("output_text", res.output)
+                tObj.put("passed", res.passed)
+                tObj.put("latency_ms", res.latencyMs)
+                tObj.put("message", res.message)
+                testsArray.put(tObj)
+            }
+            json.put("results", testsArray)
+
+            val outputFile = File(context.filesDir, "translation_benchmark_results.json")
+            outputFile.writeText(json.toString(2))
+            DiagnosticLogger.log(TAG, "Exported translation benchmark JSON: ${outputFile.absolutePath} ✓")
+        } catch (_: Exception) {}
+    }
 }
