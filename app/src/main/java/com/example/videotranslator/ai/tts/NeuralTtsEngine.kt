@@ -20,6 +20,7 @@ private const val TAG = "NeuralTtsEngine"
 /**
  * Gender-Matched Neural Text-to-Speech Engine.
  * Synthesizes natural dubbed speech for English, Hindi, and Telugu matching male and female voices.
+ * Strictly validates non-empty text and verifies audible audio output.
  */
 class NeuralTtsEngine(private val context: Context) {
 
@@ -44,7 +45,8 @@ class NeuralTtsEngine(private val context: Context) {
 
     /**
      * Synthesizes audio for all segments in the selected target language with gender matching.
-     * Saves audio as dub_{lang}_{segId}.wav for instant multi-track switching.
+     * Saves audio as dub_{lang}_{segId}.wav.
+     * Strictly verifies audio duration and non-empty output.
      */
     suspend fun synthesizeSegments(
         segments: List<TranslationSegment>,
@@ -67,7 +69,9 @@ class NeuralTtsEngine(private val context: Context) {
                 Language.TELUGU  -> seg.telugu
             }.ifBlank { seg.sourceText }
 
-            if (text.isBlank()) continue
+            if (text.isBlank()) {
+                throw IllegalStateException("Cannot synthesize audio for segment ${seg.id}: translated text for ${targetLanguage.displayName} is empty.")
+            }
 
             val gender = seg.voiceGender
             val langOutputFile = File(outputDir, "dub_${langPrefix}_${seg.id}.wav")
@@ -75,11 +79,14 @@ class NeuralTtsEngine(private val context: Context) {
 
             // Synthesize to language-specific WAV file
             synthesizeToFile(text, targetLanguage, gender, langOutputFile)
-            if (langOutputFile.exists() && langOutputFile.length() > 44L) {
-                try {
-                    langOutputFile.copyTo(defaultOutputFile, overwrite = true)
-                } catch (_: Exception) {}
+
+            if (!langOutputFile.exists() || langOutputFile.length() <= 44L) {
+                throw IllegalStateException("TTS synthesis failed for segment ${seg.id} (${targetLanguage.displayName}): generated audio file is empty.")
             }
+
+            try {
+                langOutputFile.copyTo(defaultOutputFile, overwrite = true)
+            } catch (_: Exception) {}
 
             results.add(
                 seg.copy(
@@ -98,7 +105,7 @@ class NeuralTtsEngine(private val context: Context) {
         gender: Gender,
         outputFile: File
     ) = withContext(Dispatchers.IO) {
-        val ttsInstance = tts ?: return@withContext
+        val ttsInstance = tts ?: throw IllegalStateException("System TTS Engine is not available.")
 
         try {
             outputFile.parentFile?.mkdirs()
@@ -130,6 +137,7 @@ class NeuralTtsEngine(private val context: Context) {
                 override fun onDone(id: String?) {
                     if (id == utteranceId) deferred.complete(true)
                 }
+                @Deprecated("Deprecated in Java")
                 override fun onError(id: String?) {
                     if (id == utteranceId) deferred.complete(false)
                 }
@@ -144,9 +152,12 @@ class NeuralTtsEngine(private val context: Context) {
                 try {
                     deferred.await()
                 } catch (_: Exception) {}
+            } else {
+                throw IllegalStateException("TTS synthesizeToFile returned error code: $result")
             }
         } catch (e: Exception) {
-            Log.w(TAG, "TTS synthesis notice for file ${outputFile.name}: ${e.message}")
+            DiagnosticLogger.log(TAG, "TTS synthesis error for file ${outputFile.name}: ${e.message}")
+            throw e
         }
     }
 }

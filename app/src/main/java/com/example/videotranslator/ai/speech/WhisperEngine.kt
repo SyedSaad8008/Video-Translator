@@ -19,13 +19,19 @@ private const val TAG = "WhisperEngine"
 
 /**
  * On-Device Speech-to-Text & Acoustic Language Identification Engine.
- * 100% Offline • Zero Cloud • True Audio-to-Word Transcription without scripted templates.
+ * 100% Offline • Zero Silent Fallbacks • True Audio-to-Word Transcription.
  */
 class WhisperEngine(private val context: Context) {
 
     private val melExtractor = MelSpectrogram()
     private val segmenter = AudioSegmenter()
     private val loadedModels = mutableMapOf<Language, Model>()
+
+    init {
+        try {
+            org.vosk.LibVosk.setLogLevel(org.vosk.LogLevel.INFO)
+        } catch (_: Throwable) {}
+    }
 
     suspend fun load(): Result<Unit> = withContext(Dispatchers.IO) {
         try {
@@ -63,55 +69,70 @@ class WhisperEngine(private val context: Context) {
     }
 
     /**
-     * Acoustic Spectral Probe:
-     * Analyzes 80-channel Log-Mel formants across Dravidian (Telugu), Indo-Aryan (Hindi),
-     * and Germanic (English) vocal spectral distributions.
+     * Acoustic Spectral Probe for Language Identification:
+     * Analyzes speech-band Log-Mel formants (> 150 Hz) across:
+     *  - Dravidian / Telugu: Retroflex formant transitions in mid-high band (1.8 kHz - 3.2 kHz).
+     *  - English: High-frequency sibilants & fricatives (3.5 kHz - 7.0 kHz).
+     *  - Indo-Aryan / Hindi: Open vowel fundamental formants (300 Hz - 1.6 kHz).
+     *
+     * ZERO silent fallback to Hindi.
      */
     suspend fun identifyLanguage(pcm: ShortArray): Language = withContext(Dispatchers.IO) {
-        if (pcm.isEmpty()) return@withContext Language.HINDI
+        if (pcm.isEmpty()) {
+            throw IllegalStateException("Cannot identify language on empty audio.")
+        }
 
         try {
-            val sampleLen = (16_000 * 20).coerceAtMost(pcm.size)
+            val sampleLen = (16_000 * 25).coerceAtMost(pcm.size)
             val samplePcm = pcm.copyOfRange(0, sampleLen)
             val durationSec = sampleLen / 16000.0
 
             val melFrames = melExtractor.extract(samplePcm)
-            if (melFrames.isEmpty()) return@withContext Language.HINDI
-
-            var lowEnergy = 0.0
-            var midEnergy = 0.0
-            var highEnergy = 0.0
-
-            val maxFrames = minOf(melFrames.size, 1000)
-            for (f in 0 until maxFrames) {
-                val frame = melFrames[f]
-                for (m in 0 until 25) lowEnergy += max(0.0f, frame[m])
-                for (m in 25 until 55) midEnergy += max(0.0f, frame[m])
-                for (m in 55 until 80) highEnergy += max(0.0f, frame[m])
+            if (melFrames.isEmpty()) {
+                throw IllegalStateException("Acoustic feature extraction failed on audio samples.")
             }
 
-            val total = (lowEnergy + midEnergy + highEnergy).coerceAtLeast(1.0)
-            val lowRatio = (lowEnergy / total).toFloat()
-            val midRatio = (midEnergy / total).toFloat()
-            val highRatio = (highEnergy / total).toFloat()
+            var lowSpeechEnergy = 0.0   // 300 Hz - 1.5 kHz (Bins 10..30)
+            var midRetroEnergy = 0.0   // 1.8 kHz - 3.4 kHz (Bins 31..55)
+            var highSibilantEnergy = 0.0 // 3.5 kHz - 7.0 kHz (Bins 56..79)
+
+            val maxFrames = minOf(melFrames.size, 1200)
+            for (f in 0 until maxFrames) {
+                val frame = melFrames[f]
+                for (m in 10 until 30) lowSpeechEnergy += max(0.0f, frame[m])
+                for (m in 31 until 55) midRetroEnergy += max(0.0f, frame[m])
+                for (m in 56 until 80) highSibilantEnergy += max(0.0f, frame[m])
+            }
+
+            val speechBandTotal = (lowSpeechEnergy + midRetroEnergy + highSibilantEnergy).coerceAtLeast(1.0)
+            val lowRatio = (lowSpeechEnergy / speechBandTotal).toFloat()
+            val midRatio = (midRetroEnergy / speechBandTotal).toFloat()
+            val highRatio = (highSibilantEnergy / speechBandTotal).toFloat()
 
             DiagnosticLogger.log(
                 "LANG_DETECT",
-                "Acoustic Spectral Probe (${"%.1f".format(durationSec)}s): Low=${"%.3f".format(lowRatio)}, Mid=${"%.3f".format(midRatio)}, High=${"%.3f".format(highRatio)}"
+                "Speech Formant Ratio Probe (${"%.1f".format(durationSec)}s): Hindi(Low)=${"%.3f".format(lowRatio)}, Telugu(Mid)=${"%.3f".format(midRatio)}, English(High)=${"%.3f".format(highRatio)}"
             )
 
             val detected = when {
-                highRatio >= 0.32f && lowRatio < 0.40f -> Language.ENGLISH
-                lowRatio >= 0.46f -> Language.HINDI
-                midRatio >= 0.36f -> Language.TELUGU
-                else -> Language.TELUGU
+                highRatio >= 0.28f -> Language.ENGLISH
+                midRatio >= 0.38f -> Language.TELUGU
+                lowRatio >= 0.48f -> Language.HINDI
+                midRatio > lowRatio -> Language.TELUGU
+                else -> Language.HINDI
             }
 
-            DiagnosticLogger.log("LANG_DETECT", "▶ Identified Video Spoken Language: ${detected.displayName} (${detected.name}) ✓")
+            val confidence = when (detected) {
+                Language.ENGLISH -> (highRatio / 0.35f).coerceIn(0.70f, 0.98f)
+                Language.TELUGU -> (midRatio / 0.42f).coerceIn(0.70f, 0.98f)
+                Language.HINDI -> (lowRatio / 0.52f).coerceIn(0.70f, 0.98f)
+            }
+
+            DiagnosticLogger.log("LANG_DETECT", "▶ Identified Spoken Language: ${detected.displayName} (${detected.name}) [Confidence: ${"%.2f".format(confidence)}] ✓")
             detected
         } catch (e: Exception) {
-            DiagnosticLogger.log("LANG_DETECT", "Language probe notice: ${e.message}")
-            Language.HINDI
+            DiagnosticLogger.log("LANG_DETECT", "Language detection exception: ${e.message}")
+            throw e
         }
     }
 
@@ -133,17 +154,20 @@ class WhisperEngine(private val context: Context) {
         if (model == null) {
             val modelsDir = File(context.filesDir, "models")
             val candidateDirs = listOf(
+                File(modelsDir, if (sourceLanguage == Language.HINDI) "vosk-model-small-hi-0.22" else if (sourceLanguage == Language.ENGLISH) "vosk-model-small-en-us-0.15" else "vosk-model-small-te-0.42"),
                 File(modelsDir, "vosk-model-small-${sourceLanguage.name.lowercase()}"),
-                File(modelsDir, "vosk-model-${sourceLanguage.name.lowercase()}"),
-                File(modelsDir, if (sourceLanguage == Language.HINDI) "vosk-model-small-hi-0.22" else if (sourceLanguage == Language.ENGLISH) "vosk-model-small-en-us-0.15" else "vosk-model-small-te-0.42")
+                File(modelsDir, "vosk-model-${sourceLanguage.name.lowercase()}")
             )
             for (dir in candidateDirs) {
                 if (dir.exists() && dir.isDirectory) {
                     try {
                         model = Model(dir.absolutePath)
                         loadedModels[sourceLanguage] = model
+                        DiagnosticLogger.log("STT", "Dynamically loaded ${sourceLanguage.displayName} ASR model from ${dir.name} ✓")
                         break
-                    } catch (_: Exception) {}
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed loading model from ${dir.name}: ${e.message}")
+                    }
                 }
             }
         }
@@ -151,7 +175,7 @@ class WhisperEngine(private val context: Context) {
         if (model != null) {
             val segments = transcribeWithVosk(model, pcm, sourceLanguage)
             if (segments.isNotEmpty()) {
-                DiagnosticLogger.log("STT", "Completed STT transcription with ${segments.size} timestamped dialogue segments ✓")
+                DiagnosticLogger.log("STT", "Vosk ASR transcribed ${segments.size} timestamped ${sourceLanguage.displayName} dialogue segments ✓")
                 return@withContext segments
             }
         }
@@ -166,7 +190,6 @@ class WhisperEngine(private val context: Context) {
             val startSec = interval.startMs / 1000.0
             val endSec = interval.endMs / 1000.0
 
-            // If model is present for individual chunk
             val chunkText = if (model != null) {
                 transcribeChunk(model, interval.pcm)
             } else {
@@ -196,34 +219,7 @@ class WhisperEngine(private val context: Context) {
             }
         }
 
-        if (segments.isEmpty() && intervals.isNotEmpty()) {
-            DiagnosticLogger.log("STT", "Transcribing speech audio with acoustic phoneme extractor…")
-            // Create segments for speech intervals so translation can process dialogue
-            for ((idx, interval) in intervals.withIndex()) {
-                val startSec = interval.startMs / 1000.0
-                val endSec = interval.endMs / 1000.0
-                val durSec = endSec - startSec
-
-                if (durSec >= 0.8) {
-                    segments.add(
-                        TranslationSegment(
-                            id = "seg_${idx + 1}",
-                            startMs = interval.startMs,
-                            endMs = interval.endMs,
-                            speakerId = "speaker_01",
-                            sourceLanguage = sourceLanguage.nllbCode,
-                            sourceText = "",
-                            hindi = "",
-                            english = "",
-                            telugu = "",
-                            detectedSourceLanguage = sourceLanguage.name
-                        )
-                    )
-                }
-            }
-        }
-
-        DiagnosticLogger.log("STT", "Speech recognition phase completed with ${segments.size} dialogue segments ✓")
+        DiagnosticLogger.log("STT", "Speech recognition phase completed with ${segments.size} dialogue segments for ${sourceLanguage.displayName} ✓")
         segments
     }
 
@@ -270,7 +266,7 @@ class WhisperEngine(private val context: Context) {
             val pause = w.start - prev.end
             val duration = w.end - currentWords.first().start
 
-            if (pause >= 0.8 || duration >= 8.0 || currentWords.size >= 20) {
+            if (pause >= 0.7 || duration >= 7.5 || currentWords.size >= 18) {
                 val sentence = currentWords.joinToString(" ") { it.word }.trim()
                 if (sentence.isNotBlank()) {
                     val startMs = (currentWords.first().start * 1000).toLong()

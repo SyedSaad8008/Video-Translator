@@ -12,6 +12,7 @@ private const val TAG = "TranslationPipeline"
 /**
  * Context-Aware Translation Pipeline Coordinator.
  * Translates transcription segments into English, Hindi, and Telugu using sliding context window.
+ * Strictly validates non-empty translated results.
  */
 class TranslationPipeline(private val context: Context) {
 
@@ -47,8 +48,7 @@ class TranslationPipeline(private val context: Context) {
             val cleanedSource = cleanDisfluencies(rawSource)
 
             if (cleanedSource.isBlank()) {
-                results.add(seg)
-                continue
+                throw IllegalStateException("Cannot translate segment ${seg.id} because source speech text is blank.")
             }
 
             // 1. Translate to English

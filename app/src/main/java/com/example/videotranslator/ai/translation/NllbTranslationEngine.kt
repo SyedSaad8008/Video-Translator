@@ -19,6 +19,7 @@ private const val TAG = "NllbTranslationEngine"
 /**
  * Enterprise On-Device Multilingual Neural Machine Translation Engine.
  * 100% Offline • Zero Cloud • Full Bidirectional Support for Hindi, English, and Telugu across all 6 directions.
+ * ZERO Silent Fallbacks.
  */
 class NllbTranslationEngine(private val context: Context) {
 
@@ -68,7 +69,7 @@ class NllbTranslationEngine(private val context: Context) {
 
     /**
      * Translates input text across Hindi, English, and Telugu.
-     * Supports all 6 bidirectional pairs with zero static fallbacks.
+     * Supports all 6 bidirectional pairs with strict validation and zero silent fallbacks.
      */
     suspend fun translate(
         text: String,
@@ -77,14 +78,17 @@ class NllbTranslationEngine(private val context: Context) {
         contextPrefix: String = "",
         contextSuffix: String = ""
     ): String = withContext(Dispatchers.IO) {
-        if (text.isBlank() || sourceLanguage == targetLanguage) return@withContext text
+        if (text.isBlank()) {
+            throw IllegalStateException("Cannot translate blank or empty text.")
+        }
+        if (sourceLanguage == targetLanguage) return@withContext text
 
         val cleanText = text.trim()
         val srcConfig = LanguageConfig.forLanguage(sourceLanguage)
         val tgtConfig = LanguageConfig.forLanguage(targetLanguage)
 
-        try {
-            val result = if (sourceLanguage == Language.HINDI && targetLanguage == Language.TELUGU) {
+        val result = try {
+            if (sourceLanguage == Language.HINDI && targetLanguage == Language.TELUGU) {
                 // Pivot: Hindi -> English -> Telugu
                 val en = translateDirect(cleanText, TranslateLanguage.HINDI, TranslateLanguage.ENGLISH)
                 translateDirect(en, TranslateLanguage.ENGLISH, TranslateLanguage.TELUGU)
@@ -95,20 +99,20 @@ class NllbTranslationEngine(private val context: Context) {
             } else {
                 translateDirect(cleanText, srcConfig.mlKitCode, tgtConfig.mlKitCode)
             }
-
-            if (result.isNotBlank()) {
-                DiagnosticLogger.log(
-                    "TRANSLATION",
-                    "[${sourceLanguage.name} -> ${targetLanguage.name}] \"$cleanText\" → \"$result\""
-                )
-                return@withContext result
-            }
         } catch (e: Exception) {
             DiagnosticLogger.log("TRANSLATION", "Translation error [${sourceLanguage.name} -> ${targetLanguage.name}]: ${e.localizedMessage}")
-            Log.w(TAG, "Direct NMT exception: ${e.message}", e)
+            throw IllegalStateException("On-device translation failed [${sourceLanguage.displayName} -> ${targetLanguage.displayName}]: ${e.message}")
         }
 
-        return@withContext cleanText
+        if (result.isBlank()) {
+            throw IllegalStateException("Translation model produced empty output for input: \"$cleanText\"")
+        }
+
+        DiagnosticLogger.log(
+            "TRANSLATION",
+            "[${sourceLanguage.name} -> ${targetLanguage.name}] \"$cleanText\" → \"$result\" ✓"
+        )
+        result
     }
 
     private suspend fun translateDirect(
@@ -127,7 +131,7 @@ class NllbTranslationEngine(private val context: Context) {
             try {
                 translator.downloadModelIfNeeded().await()
             } catch (e: Exception) {
-                DiagnosticLogger.log("TRANSLATION", "Model download notice for $key: ${e.message}")
+                DiagnosticLogger.log("TRANSLATION", "Model download for $key: ${e.message}")
             }
             translators[key] = translator
         }
