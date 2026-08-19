@@ -29,15 +29,27 @@ class TranslationPipeline(private val context: Context) {
     ): List<TranslationSegment> = withContext(Dispatchers.IO) {
         if (segments.isEmpty()) return@withContext emptyList()
 
-        DiagnosticLogger.log(TAG, "STAGE 4 - Translating ${segments.size} segments from $sourceLanguage across all target tracks…")
+        DiagnosticLogger.log(TAG, "STAGE 4 - Translating ${segments.size} segments from ${sourceLanguage.displayName} across all target tracks…")
 
         val results = mutableListOf<TranslationSegment>()
 
         for ((i, seg) in segments.withIndex()) {
             val prevText = if (i > 0) segments[i - 1].sourceText else ""
             val nextText = if (i < segments.size - 1) segments[i + 1].sourceText else ""
-            val rawSource = seg.sourceText.ifBlank { seg.hindi }
+
+            val rawSource = seg.sourceText.ifBlank {
+                when (sourceLanguage) {
+                    Language.ENGLISH -> seg.english
+                    Language.TELUGU  -> seg.telugu
+                    Language.HINDI   -> seg.hindi
+                }
+            }
             val cleanedSource = cleanDisfluencies(rawSource)
+
+            if (cleanedSource.isBlank()) {
+                results.add(seg)
+                continue
+            }
 
             // 1. Translate to English
             val enText = if (sourceLanguage == Language.ENGLISH) cleanedSource

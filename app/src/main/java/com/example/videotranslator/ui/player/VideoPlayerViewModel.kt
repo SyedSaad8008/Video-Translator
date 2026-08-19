@@ -263,7 +263,9 @@ class VideoPlayerViewModel(application: Application) : AndroidViewModel(applicat
                         val inWindow = pos in (seg.startMs - TRIGGER_TOLERANCE_MS)..(seg.endMs + TRIGGER_TOLERANCE_MS)
                         if (inWindow && i != lastSpokenIndex) {
                             lastSpokenIndex = i
-                            val audioFile = File(renderedDir, "dub_${seg.id}.wav")
+                            val langFile = File(renderedDir, "dub_${language.name.lowercase()}_${seg.id}.wav")
+                            val defaultFile = File(renderedDir, "dub_${seg.id}.wav")
+                            val audioFile = if (langFile.exists() && langFile.length() > 44L) langFile else defaultFile
                             if (audioFile.exists() && audioFile.length() > 44L) {
                                 segmentAudioPlayer.playSegment(audioFile, seg.speedRatio)
                             }

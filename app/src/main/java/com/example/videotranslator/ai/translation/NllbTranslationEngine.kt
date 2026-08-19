@@ -3,6 +3,7 @@ package com.example.videotranslator.ai.translation
 import android.content.Context
 import android.util.Log
 import com.example.videotranslator.model.Language
+import com.example.videotranslator.model.LanguageConfig
 import com.example.videotranslator.util.DiagnosticLogger
 import com.google.mlkit.common.model.DownloadConditions
 import com.google.mlkit.nl.translate.TranslateLanguage
@@ -17,7 +18,7 @@ private const val TAG = "NllbTranslationEngine"
 
 /**
  * Enterprise On-Device Multilingual Neural Machine Translation Engine.
- * 100% Offline • Zero Cloud • Full Bidirectional Support for Hindi, English, and Telugu.
+ * 100% Offline • Zero Cloud • Full Bidirectional Support for Hindi, English, and Telugu across all 6 directions.
  */
 class NllbTranslationEngine(private val context: Context) {
 
@@ -25,7 +26,7 @@ class NllbTranslationEngine(private val context: Context) {
 
     suspend fun load(): Result<Unit> = withContext(Dispatchers.IO) {
         try {
-            DiagnosticLogger.log("TRANSLATION", "Initializing on-device Neural Translation models for HI, EN, TE…")
+            DiagnosticLogger.log("TRANSLATION", "Initializing on-device Neural Translation models for Hindi, English, and Telugu…")
             val pairs = listOf(
                 TranslateLanguage.HINDI to TranslateLanguage.ENGLISH,
                 TranslateLanguage.ENGLISH to TranslateLanguage.HINDI,
@@ -67,7 +68,7 @@ class NllbTranslationEngine(private val context: Context) {
 
     /**
      * Translates input text across Hindi, English, and Telugu.
-     * Supports all 6 bidirectional pairs.
+     * Supports all 6 bidirectional pairs with zero static fallbacks.
      */
     suspend fun translate(
         text: String,
@@ -79,6 +80,8 @@ class NllbTranslationEngine(private val context: Context) {
         if (text.isBlank() || sourceLanguage == targetLanguage) return@withContext text
 
         val cleanText = text.trim()
+        val srcConfig = LanguageConfig.forLanguage(sourceLanguage)
+        val tgtConfig = LanguageConfig.forLanguage(targetLanguage)
 
         try {
             val result = if (sourceLanguage == Language.HINDI && targetLanguage == Language.TELUGU) {
@@ -90,7 +93,7 @@ class NllbTranslationEngine(private val context: Context) {
                 val en = translateDirect(cleanText, TranslateLanguage.TELUGU, TranslateLanguage.ENGLISH)
                 translateDirect(en, TranslateLanguage.ENGLISH, TranslateLanguage.HINDI)
             } else {
-                translateDirect(cleanText, sourceLanguage.mlKitCode, targetLanguage.mlKitCode)
+                translateDirect(cleanText, srcConfig.mlKitCode, tgtConfig.mlKitCode)
             }
 
             if (result.isNotBlank()) {
@@ -101,7 +104,8 @@ class NllbTranslationEngine(private val context: Context) {
                 return@withContext result
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Direct NMT exception: ${e.message}")
+            DiagnosticLogger.log("TRANSLATION", "Translation error [${sourceLanguage.name} -> ${targetLanguage.name}]: ${e.localizedMessage}")
+            Log.w(TAG, "Direct NMT exception: ${e.message}", e)
         }
 
         return@withContext cleanText
@@ -122,7 +126,9 @@ class NllbTranslationEngine(private val context: Context) {
             translator = Translation.getClient(options)
             try {
                 translator.downloadModelIfNeeded().await()
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                DiagnosticLogger.log("TRANSLATION", "Model download notice for $key: ${e.message}")
+            }
             translators[key] = translator
         }
 

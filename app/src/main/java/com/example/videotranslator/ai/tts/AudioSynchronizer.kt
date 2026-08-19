@@ -10,59 +10,53 @@ import java.io.RandomAccessFile
 private const val TAG = "AudioSynchronizer"
 
 /**
- * Audio-Video Lip-Sync & Speed Alignment Synchronizer.
- * Adjusts synthesized speech duration to fit original video segment time windows (0.75x - 1.50x).
+ * Audio-Video Natural Timing & Speed Alignment Synchronizer.
+ * Calculates natural human speaking rate and bounds speed strictly within 0.95x - 1.15x.
  */
 class AudioSynchronizer {
+
+    private val timingEngine = TranslationTimingEngine()
 
     fun calculateSpeedRatio(synthesizedDurationMs: Long, targetDurationMs: Long): Float {
         if (targetDurationMs <= 0L || synthesizedDurationMs <= 0L) return 1.0f
         val ratio = synthesizedDurationMs.toFloat() / targetDurationMs.toFloat()
-        return ratio.coerceIn(0.75f, 1.50f)
+        return ratio.coerceIn(0.95f, 1.15f)
     }
 
     suspend fun synchronizeSegments(
         segments: List<TranslationSegment>,
-        outputDir: File
+        outputDir: File,
+        languagePrefix: String = ""
     ): List<TranslationSegment> = withContext(Dispatchers.IO) {
         if (segments.isEmpty()) return@withContext emptyList()
 
-        DiagnosticLogger.log(TAG, "STAGE 6 - Synchronizing lip-sync timing for ${segments.size} segments…")
+        DiagnosticLogger.log(TAG, "STAGE 6 - Synchronizing natural timing and pause allocation for ${segments.size} segments…")
         outputDir.mkdirs()
 
-        val results = mutableListOf<TranslationSegment>()
+        val timedResults = timingEngine.calculateTiming(segments, outputDir, languagePrefix)
+        val finalSegments = mutableListOf<TranslationSegment>()
 
-        for (seg in segments) {
-            val targetDurationMs = (seg.endMs - seg.startMs).coerceAtLeast(300L)
-            val audioFile = File(outputDir, "dub_${seg.id}.wav")
+        for (timed in timedResults) {
+            val seg = timed.segment
+            val audioFileName = if (languagePrefix.isNotBlank()) "dub_${languagePrefix}_${seg.id}.wav" else "dub_${seg.id}.wav"
+            val audioFile = File(outputDir, audioFileName)
 
-            // Ensure valid WAV container exists
             if (!audioFile.exists() || audioFile.length() < 44L) {
-                createSilentWav(audioFile, targetDurationMs)
+                createSilentWav(audioFile, timed.originalDurationMs)
             }
 
-            val rawDurationMs = getWavDurationMs(audioFile)
-            val speedRatio = calculateSpeedRatio(rawDurationMs, targetDurationMs)
-
-            results.add(
+            finalSegments.add(
                 seg.copy(
                     audioFilePath = audioFile.absolutePath,
-                    targetDurationMs = targetDurationMs,
-                    actualDurationMs = rawDurationMs,
-                    speedRatio = speedRatio
+                    targetDurationMs = timed.originalDurationMs,
+                    actualDurationMs = timed.actualTtsDurationMs,
+                    speedRatio = timed.naturalSpeedRatio
                 )
             )
         }
 
-        DiagnosticLogger.log(TAG, "STAGE 6 - Lip-sync audio alignment complete ✓")
-        results
-    }
-
-    private fun getWavDurationMs(file: File): Long {
-        if (!file.exists() || file.length() <= 44L) return 0L
-        val dataBytes = file.length() - 44L
-        val bytesPerSec = 16000 * 2 // 16kHz 16-bit mono = 32,000 bytes/sec
-        return (dataBytes * 1000L) / bytesPerSec
+        DiagnosticLogger.log(TAG, "STAGE 6 - Natural audio timing alignment complete ✓ (All speaking speeds bounded to 0.95x-1.15x)")
+        finalSegments
     }
 
     private fun createSilentWav(file: File, durationMs: Long) {

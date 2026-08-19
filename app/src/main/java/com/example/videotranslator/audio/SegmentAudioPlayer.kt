@@ -31,8 +31,8 @@ class SegmentAudioPlayer {
                 setDataSource(audioFile.absolutePath)
                 prepare()
 
-                // Apply pitch-preserved speed scaling (API 23+)
-                val clampedRatio = speedRatio.coerceIn(0.75f, 1.5f)
+                // Apply pitch-preserved speed scaling strictly in natural human range (0.95x - 1.15x)
+                val clampedRatio = speedRatio.coerceIn(0.95f, 1.15f)
                 val params = PlaybackParams().apply {
                     speed = clampedRatio
                     pitch = 1.0f // Preserve natural pitch

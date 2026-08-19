@@ -7,19 +7,19 @@ import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import com.example.videotranslator.model.Gender
 import com.example.videotranslator.model.Language
+import com.example.videotranslator.model.LanguageConfig
 import com.example.videotranslator.model.TranslationSegment
 import com.example.videotranslator.util.DiagnosticLogger
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.util.Locale
 
 private const val TAG = "NeuralTtsEngine"
 
 /**
  * Gender-Matched Neural Text-to-Speech Engine.
- * Synthesizes dubbed speech for English, Hindi, and Telugu matching male and female voices.
+ * Synthesizes natural dubbed speech for English, Hindi, and Telugu matching male and female voices.
  */
 class NeuralTtsEngine(private val context: Context) {
 
@@ -44,6 +44,7 @@ class NeuralTtsEngine(private val context: Context) {
 
     /**
      * Synthesizes audio for all segments in the selected target language with gender matching.
+     * Saves audio as dub_{lang}_{segId}.wav for instant multi-track switching.
      */
     suspend fun synthesizeSegments(
         segments: List<TranslationSegment>,
@@ -52,7 +53,9 @@ class NeuralTtsEngine(private val context: Context) {
     ): List<TranslationSegment> = withContext(Dispatchers.IO) {
         if (segments.isEmpty()) return@withContext emptyList()
 
-        DiagnosticLogger.log(TAG, "STAGE 5 - Synthesizing ${segments.size} segments into ${targetLanguage.displayName} with gender matching…")
+        val langConfig = LanguageConfig.forLanguage(targetLanguage)
+        val langPrefix = targetLanguage.name.lowercase()
+        DiagnosticLogger.log(TAG, "STAGE 5 - Synthesizing ${segments.size} segments into ${langConfig.displayName} with gender matching…")
         outputDir.mkdirs()
 
         val results = mutableListOf<TranslationSegment>()
@@ -64,20 +67,28 @@ class NeuralTtsEngine(private val context: Context) {
                 Language.TELUGU  -> seg.telugu
             }.ifBlank { seg.sourceText }
 
-            val gender = seg.voiceGender
-            val outputFile = File(outputDir, "dub_${seg.id}.wav")
+            if (text.isBlank()) continue
 
-            // Synthesize to WAV file
-            synthesizeToFile(text, targetLanguage, gender, outputFile)
+            val gender = seg.voiceGender
+            val langOutputFile = File(outputDir, "dub_${langPrefix}_${seg.id}.wav")
+            val defaultOutputFile = File(outputDir, "dub_${seg.id}.wav")
+
+            // Synthesize to language-specific WAV file
+            synthesizeToFile(text, targetLanguage, gender, langOutputFile)
+            if (langOutputFile.exists() && langOutputFile.length() > 44L) {
+                try {
+                    langOutputFile.copyTo(defaultOutputFile, overwrite = true)
+                } catch (_: Exception) {}
+            }
 
             results.add(
                 seg.copy(
-                    audioFilePath = outputFile.absolutePath
+                    audioFilePath = langOutputFile.absolutePath
                 )
             )
         }
 
-        DiagnosticLogger.log(TAG, "STAGE 5 - Dubbed speech synthesis complete for ${results.size} segments ✓")
+        DiagnosticLogger.log(TAG, "STAGE 5 - Dubbed speech synthesis complete for ${results.size} segments into ${langConfig.displayName} ✓")
         results
     }
 
@@ -92,22 +103,18 @@ class NeuralTtsEngine(private val context: Context) {
         try {
             outputFile.parentFile?.mkdirs()
 
-            val locale = when (language) {
-                Language.HINDI   -> Locale("hi", "IN")
-                Language.ENGLISH -> Locale.US
-                Language.TELUGU  -> Locale("te", "IN")
-            }
-            ttsInstance.language = locale
+            val config = LanguageConfig.forLanguage(language)
+            ttsInstance.language = config.defaultLocale
 
-            // Apply gender pitch & speech rate modulation
+            // Apply subtle, natural gender pitch modulation without robotic distortion
             when (gender) {
                 Gender.FEMALE -> {
-                    ttsInstance.setPitch(1.22f)
-                    ttsInstance.setSpeechRate(1.05f)
+                    ttsInstance.setPitch(1.10f)
+                    ttsInstance.setSpeechRate(1.00f)
                 }
                 Gender.MALE -> {
-                    ttsInstance.setPitch(0.88f)
-                    ttsInstance.setSpeechRate(0.98f)
+                    ttsInstance.setPitch(0.92f)
+                    ttsInstance.setSpeechRate(1.00f)
                 }
                 Gender.UNKNOWN -> {
                     ttsInstance.setPitch(1.00f)
