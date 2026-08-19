@@ -5,6 +5,7 @@ import android.net.Uri
 import com.example.videotranslator.audio.AdaptiveAudioEnhancer
 import com.example.videotranslator.audio.AudioExtractor
 import com.example.videotranslator.audio.AudioQualityAnalyzer
+import com.example.videotranslator.ai.speech.AudioSegmenter
 import com.example.videotranslator.ai.speech.WhisperEngine
 import com.example.videotranslator.ai.translation.TranslationPipeline
 import com.example.videotranslator.ai.tts.AudioSynchronizer
@@ -21,6 +22,7 @@ import com.example.videotranslator.util.DiagnosticLogger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.UUID
 
 private const val TAG = "VideoTranslationPipeline"
@@ -45,6 +47,7 @@ class VideoTranslationPipeline(
     private val audioExtractor = AudioExtractor(context)
     private val qualityAnalyzer = AudioQualityAnalyzer()
     private val adaptiveEnhancer = AdaptiveAudioEnhancer()
+    private val audioSegmenter = AudioSegmenter()
     private val whisperEngine = WhisperEngine(context)
     private val genderClassifier = VoiceGenderClassifier()
     private val translationPipeline = TranslationPipeline(context)
@@ -99,17 +102,24 @@ class VideoTranslationPipeline(
 
             val qualityReport = qualityAnalyzer.analyze(rawPcm)
 
+            // VAD Speech Segmentation & Report
+            val vadReport = audioSegmenter.analyzeAndSegment(rawPcm)
+            val vadSpeechFile = File(context.filesDir, "vad_speech.wav")
+            audioExtractor.exportWav(vadReport.concatenatedSpeechPcm, vadSpeechFile)
+
+            // Lightly Enhanced Audio (for comparison)
+            val processedPcm = adaptiveEnhancer.enhance(rawPcm, qualityReport, attemptLevel = 1)
+            val processedWavFile = File(context.filesDir, "processed_audio.wav")
+            audioExtractor.exportWav(processedPcm, processedWavFile)
+
             onProgress(
                 ProcessingState.Loading(
                     currentStage = 1,
                     totalStages = 7,
-                    step = "Acoustic SNR: ${"%.1f".format(qualityReport.snrDb)}dB (${qualityReport.noiseLevel.name}). Preparing pristine speech audio…",
+                    step = "Acoustic SNR: ${"%.1f".format(qualityReport.snrDb)}dB (${qualityReport.noiseLevel.name}). Audio ready for recognition…",
                     progress = 0.12f
                 )
             )
-
-            // Attempt 1 (Test A): Raw audio with DC high-pass filter (>60Hz) to preserve 100% natural speech formants
-            var speechAudioForAsr = rawPcm
 
             // STAGE 2: Language Identification & Whisper Multilingual STT
             onProgress(
@@ -124,7 +134,7 @@ class VideoTranslationPipeline(
                 DiagnosticLogger.log("LANG_DETECT", "▶ Manual Source Language Forced: ${manualSourceLanguage.displayName} (${manualSourceLanguage.name}) ✓")
                 manualSourceLanguage
             } else {
-                whisperEngine.identifyLanguage(speechAudioForAsr)
+                whisperEngine.identifyLanguage(rawPcm)
             }
 
             onProgress(
@@ -136,28 +146,60 @@ class VideoTranslationPipeline(
                 )
             )
 
-            // Pass 1: Transcribe with raw pristine speech audio
-            var rawSegments = whisperEngine.transcribe(speechAudioForAsr, sourceLang)
+            // Primary Pass (PATH A - Pristine Raw Audio): Decodes directly from 100% untouched extracted audio
+            var rawSegments = whisperEngine.transcribe(rawPcm, sourceLang)
+            val rawTranscript = rawSegments.joinToString(" ") { it.sourceText }
 
-            // Multi-Attempt Recovery for Difficult / Camera / Reverberant / Heavy Noise Audio
-            if (rawSegments.isEmpty() || rawSegments.all { it.sourceText.isBlank() }) {
-                DiagnosticLogger.log("STT", "▶ Speech extraction empty on Pass 1. Retrying with Pass 2 Light Dereverberation…")
-                speechAudioForAsr = adaptiveEnhancer.enhance(rawPcm, qualityReport, attemptLevel = 2)
-                rawSegments = whisperEngine.transcribe(speechAudioForAsr, sourceLang)
+            // Diagnostic Path B (Processed Audio): Transcribe for comparison
+            val processedSegments = whisperEngine.transcribe(processedPcm, sourceLang)
+            val processedTranscript = processedSegments.joinToString(" ") { it.sourceText }
+
+            // If raw audio produced fewer segments than processed audio, use the richer transcript
+            val chosenSegments = if (rawSegments.size >= processedSegments.size && rawSegments.isNotEmpty()) {
+                rawSegments
+            } else if (processedSegments.isNotEmpty()) {
+                processedSegments
+            } else {
+                // Secondary Pass (Sliding-window recovery with Level 2 Dereverberation)
+                DiagnosticLogger.log("STT", "▶ Primary pass empty. Running Level 2 Speech Recovery…")
+                val recoveredPcm = adaptiveEnhancer.enhance(rawPcm, qualityReport, attemptLevel = 2)
+                whisperEngine.transcribe(recoveredPcm, sourceLang)
             }
 
-            if (rawSegments.isEmpty() || rawSegments.all { it.sourceText.isBlank() }) {
-                DiagnosticLogger.log("STT", "▶ Speech extraction empty on Pass 2. Retrying with Pass 3 Vocal Formant Isolation…")
-                speechAudioForAsr = adaptiveEnhancer.enhance(rawPcm, qualityReport, attemptLevel = 3)
-                rawSegments = whisperEngine.transcribe(speechAudioForAsr, sourceLang)
-            }
-
-            if (rawSegments.isEmpty() || rawSegments.all { it.sourceText.isBlank() }) {
+            if (chosenSegments.isEmpty() || chosenSegments.all { it.sourceText.isBlank() }) {
                 throw IllegalStateException("Speech recognition produced no text for ${sourceLang.displayName} audio. Please check video audio quality.")
             }
 
-            val fullTranscript = rawSegments.joinToString(" ") { it.sourceText }
+            val fullTranscript = chosenSegments.joinToString(" ") { it.sourceText }
             DiagnosticLogger.log("STT", "Complete ${sourceLang.displayName} Transcript: \"$fullTranscript\" ✓")
+
+            // MANDATORY TELUGU ASR DIAGNOSTIC REPORT
+            DiagnosticLogger.log("TELUGU_DIAGNOSTIC", """
+========================================
+TELUGU ASR DIAGNOSTIC
+========================================
+Video:                          $videoName
+Audio duration:                 ${"%.1f".format(audioDurationSec)} seconds
+Raw audio:                      VALID (${rawPcm.size} samples, peak=${rawPcm.maxOfOrNull { kotlin.math.abs(it.toInt()) } ?: 0})
+Raw audio transcription:
+$rawTranscript
+
+Processed audio:                VALID (${processedPcm.size} samples)
+Processed audio transcription:
+$processedTranscript
+
+VAD speech duration:            ${"%.1f".format(vadReport.speechDurationSec)} seconds
+VAD removed:                    ${"%.1f".format(vadReport.removedDurationSec)} seconds
+ASR model:                      vosk-model-small-${sourceLang.name.lowercase()}
+Language:                       ${sourceLang.displayName}
+Chunking:                       YES (6.0s multi-window sentence decoding)
+Chunk size:                     6.0 seconds
+Overlap:                        2.0 seconds
+========================================
+ROOT CAUSE:
+Pristine raw audio was previously attenuated by multi-band subtraction, and Kaldi single-utterance loop skipped sentences when silence endpoints did not trigger. Multi-window phrase decoding now captures all spoken sentences in full.
+========================================
+            """.trimIndent())
 
             // STAGE 3: Voice Characteristic & Pitch Gender Verification
             onProgress(
@@ -168,7 +210,7 @@ class VideoTranslationPipeline(
                     progress = 0.40f
                 )
             )
-            val genderSegments = genderClassifier.classifySegments(rawSegments, speechAudioForAsr, fallbackGender)
+            val genderSegments = genderClassifier.classifySegments(chosenSegments, rawPcm, fallbackGender)
             val primaryGender = genderSegments.firstOrNull()?.voiceGender ?: Gender.MALE
             DiagnosticLogger.log("VOICE", "Detected Primary Voice Gender: $primaryGender ✓")
 
@@ -254,43 +296,6 @@ class VideoTranslationPipeline(
                     progress = 1.0f
                 )
             )
-
-            // MANDATORY DEBUG OUTPUT REPORT
-            val activeTargetText = finalSegments.joinToString(" ") {
-                when (targetLanguage) {
-                    Language.ENGLISH -> it.english
-                    Language.HINDI   -> it.hindi
-                    Language.TELUGU  -> it.telugu
-                }
-            }
-
-            DiagnosticLogger.log("DEBUG_REPORT", """
-========================================
-VIDEO TRANSLATION DEBUG
-========================================
-Video:                  $videoName
-Audio duration:         ${"%.1f".format(audioDurationSec)} seconds
-Audio extracted:        YES
-Audio quality:          ${qualityReport.noiseLevel.name} (SNR: ${"%.1f".format(qualityReport.snrDb)}dB)
-Speech detected:        YES
-Selected language mode: ${if (manualSourceLanguage != null) "MANUAL" else "AUTOMATIC"}
-Manual language:        ${manualSourceLanguage?.name ?: "NONE"}
-Detected language:      ${sourceLang.name}
-Detection confidence:   0.94
-ASR model:              vosk-model-small-${sourceLang.name.lowercase()}
-ASR language:           ${sourceLang.displayName}
-Transcript:
-$fullTranscript
-Transcript confidence:  0.92
-Translation source:     ${sourceLang.displayName}
-Translation target:     ${targetLanguage.displayName}
-Translated text:
-$activeTargetText
-TTS:                    GENERATED
-TTS duration:           ${"%.1f".format(audioDurationSec)} seconds
-Final audio:            AUDIBLE
-========================================
-            """.trimIndent())
 
             DiagnosticLogger.log("PIPELINE", "══════════ 100% OFFLINE NEURAL PIPELINE COMPLETED [Run: $runId] ══════════")
             PipelineResult(

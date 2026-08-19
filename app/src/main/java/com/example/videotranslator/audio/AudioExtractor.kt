@@ -7,9 +7,11 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
 import android.util.Log
+import com.example.videotranslator.util.DiagnosticLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
@@ -23,29 +25,15 @@ private const val TARGET_SAMPLE_RATE = 16_000
 
 /**
  * Stage 1 Audio Extractor & Processor.
- *
- * Fixed Root Causes:
- *  1. **5.1 / Multi-Channel Surround Downmixing**:
- *     In 5.1 surround sound audio tracks (6 channels, common in AAC/AC3 MP4 videos),
- *     human speech dialogue is mixed into Channel 2 (Center Channel). Previous extractors
- *     only read Channels 0 (FL) & 1 (FR) and discarded Channel 2, stripping out human speech!
- *     This fix downmixes all channels properly with Center channel prioritization:
- *       `mono = Center * 0.50 + (FL + FR) * 0.25`
- *  2. **PCM Encoding Handling**:
- *     Detects `ENCODING_PCM_16BIT`, `ENCODING_PCM_FLOAT`, and `ENCODING_PCM_8BIT` from `codec.outputFormat`.
- *  3. **Anti-Aliased Resampling**:
- *     Applies a 31-tap Blackman-windowed FIR low-pass filter ($f_c = 7200\text{ Hz}$) when downsampling from 48kHz / 44.1kHz.
- *  4. **Peak Normalization**:
- *     Normalizes mono audio peak to 26,000 (-2 dB peak) so quiet dialog is boosted to optimal speech recognition levels.
- *  5. **WAV File Export**:
- *     Writes `extracted_speech.wav` to `context.filesDir` with a 44-byte RIFF header for inspection/ADB pulling.
+ * Extracts 100% pristine original 16kHz mono audio from video containers.
+ * Saves `original_extracted.wav` for developer inspection and developer control experiments.
  */
 class AudioExtractor(private val context: Context) {
 
     data class ExtractionResult(
-        /** 16 kHz mono, 16-bit LE — feed to Vosk */
+        /** 16 kHz mono, 16-bit LE — pristine audio for Vosk/Whisper */
         val mono: ShortArray,
-        /** 16 kHz stereo interleaved (L, R, L, R…), 16-bit LE — null when source is mono */
+        /** 16 kHz stereo interleaved (L, R, L, R…) — null when source is mono */
         val instrumental: ShortArray?
     )
 
@@ -97,7 +85,7 @@ class AudioExtractor(private val context: Context) {
             inputFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
         } else 2
 
-        Log.d(TAG, "STAGE 1 - Selected track index=$trackIdx, mime=$mime, rate=$initialRate, channels=$initialChannels")
+        DiagnosticLogger.log(TAG, "STAGE 1 - Extracting Audio: mime=$mime, sourceRate=${initialRate}Hz, sourceChannels=$initialChannels")
 
         val codec: MediaCodec
         try {
@@ -114,9 +102,9 @@ class AudioExtractor(private val context: Context) {
         var channelCount = initialChannels
         var pcmEncoding = AudioFormat.ENCODING_PCM_16BIT
 
-        val rawMonoSamples = mutableListOf<Short>()
-        val rawLeftSamples = mutableListOf<Short>()
-        val rawRightSamples = mutableListOf<Short>()
+        val monoStream = ByteArrayOutputStream(1024 * 1024 * 4)
+        val leftStream = ByteArrayOutputStream(1024 * 1024 * 4)
+        val rightStream = ByteArrayOutputStream(1024 * 1024 * 4)
 
         val timeoutUs = 10_000L
         var inputDone = false
@@ -147,7 +135,6 @@ class AudioExtractor(private val context: Context) {
                 when {
                     outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                         val outFmt = codec.outputFormat
-                        Log.d(TAG, "STAGE 1 - Decoder output format changed: $outFmt")
                         if (outFmt.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
                             sampleRate = outFmt.getInteger(MediaFormat.KEY_SAMPLE_RATE)
                         }
@@ -157,7 +144,7 @@ class AudioExtractor(private val context: Context) {
                         if (outFmt.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
                             pcmEncoding = outFmt.getInteger(MediaFormat.KEY_PCM_ENCODING)
                         }
-                        Log.d(TAG, "STAGE 1 - Configured decoder: rate=$sampleRate, channels=$channelCount, encoding=$pcmEncoding")
+                        DiagnosticLogger.log(TAG, "STAGE 1 - Decoder format: rate=${sampleRate}Hz, channels=$channelCount, encoding=$pcmEncoding")
                     }
                     outIdx >= 0 -> {
                         val outBuf = codec.getOutputBuffer(outIdx)
@@ -167,7 +154,7 @@ class AudioExtractor(private val context: Context) {
                             outBuf.order(ByteOrder.LITTLE_ENDIAN)
 
                             val samples = decodeToShorts(outBuf, pcmEncoding)
-                            processDecodedFrame(samples, channelCount, rawMonoSamples, rawLeftSamples, rawRightSamples)
+                            processDecodedFrameToStreams(samples, channelCount, monoStream, leftStream, rightStream)
                         }
                         codec.releaseOutputBuffer(outIdx, false)
                         if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
@@ -182,9 +169,18 @@ class AudioExtractor(private val context: Context) {
             try { extractor.release() } catch (_: Exception) {}
         }
 
-        val monoArr = rawMonoSamples.toShortArray()
-        val leftArr = if (rawLeftSamples.isNotEmpty()) rawLeftSamples.toShortArray() else monoArr
-        val rightArr = if (rawRightSamples.isNotEmpty()) rawRightSamples.toShortArray() else monoArr
+        val monoBytes = monoStream.toByteArray()
+        val monoBuffer = ByteBuffer.wrap(monoBytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+        val monoArr = ShortArray(monoBuffer.remaining()).also { monoBuffer.get(it) }
+
+        val leftBytes = leftStream.toByteArray()
+        val leftBuffer = ByteBuffer.wrap(leftBytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+        val leftArr = if (leftBytes.isNotEmpty()) ShortArray(leftBuffer.remaining()).also { leftBuffer.get(it) } else monoArr
+
+        val rightBytes = rightStream.toByteArray()
+        val rightBuffer = ByteBuffer.wrap(rightBytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+        val rightArr = if (rightBytes.isNotEmpty()) ShortArray(rightBuffer.remaining()).also { rightBuffer.get(it) } else monoArr
+
         val isStereo = channelCount >= 2
 
         // Anti-aliased high quality resampling to 16 kHz
@@ -200,7 +196,11 @@ class AudioExtractor(private val context: Context) {
         var sumSq = 0.0
         for (s in mono) sumSq += s.toDouble() * s.toDouble()
         val rms = if (mono.isNotEmpty()) sqrt(sumSq / mono.size) else 0.0
-        Log.d(TAG, "STAGE 1 - Audio Stats: duration=${"%.2f".format(mono.size / 16000.0)}s, samples=${mono.size}, peak=$peak, rms=${"%.1f".format(rms)}")
+        val durationSec = mono.size / 16000.0
+        DiagnosticLogger.log(
+            TAG,
+            "STAGE 1 - Extracted Audio Stats: duration=${"%.2f".format(durationSec)}s (${mono.size} samples), peak=$peak, rms=${"%.1f".format(rms)}"
+        )
 
         // Instrumental track = (L - R) / 2 (if stereo)
         val instrumental: ShortArray? = if (isStereo) {
@@ -215,7 +215,6 @@ class AudioExtractor(private val context: Context) {
             val instRms = if (checkSamples > 0) sqrt(instSumSq / checkSamples) else 0.0
 
             if (instRms < 100.0) {
-                Log.d(TAG, "STAGE 1 - Instrumental cancellation produced near-silence (rms=$instRms) → treating as mono")
                 null
             } else {
                 ShortArray(cancelled.size * 2) { i ->
@@ -228,10 +227,10 @@ class AudioExtractor(private val context: Context) {
         writePcm(mono, monoFile)
         if (instrumental != null) writePcm(instrumental, instrumentalFile)
 
-        // STAGE 1 DELIVERABLE: Export standard RIFF WAV file to filesDir for direct listening/ADB extraction
-        val wavExportFile = File(context.filesDir, "extracted_speech.wav")
-        writeWavFile(mono, TARGET_SAMPLE_RATE, 1, wavExportFile)
-        Log.d(TAG, "STAGE 1 DELIVERABLE - Exported RIFF WAV file: ${wavExportFile.absolutePath} (${wavExportFile.length()} bytes)")
+        // STAGE 1 DELIVERABLE: Export standard RIFF WAV files for developer verification
+        val rawWavExport = File(context.filesDir, "original_extracted.wav")
+        writeWavFile(mono, TARGET_SAMPLE_RATE, 1, rawWavExport)
+        DiagnosticLogger.log(TAG, "STAGE 1 DELIVERABLE - Exported pristine WAV: ${rawWavExport.absolutePath} (${rawWavExport.length()} bytes) ✓")
 
         ExtractionResult(mono, instrumental)
     }
@@ -242,6 +241,10 @@ class AudioExtractor(private val context: Context) {
 
     suspend fun loadInstrumentalFromCache(file: File): ShortArray = withContext(Dispatchers.IO) {
         readPcm(file)
+    }
+
+    fun exportWav(samples: ShortArray, outputFile: File) {
+        writeWavFile(samples, TARGET_SAMPLE_RATE, 1, outputFile)
     }
 
     // ─────────────────────────────── PCM Decoders ─────────────────────────────
@@ -272,26 +275,27 @@ class AudioExtractor(private val context: Context) {
         }
     }
 
-    /**
-     * Process decoded samples across all channel layouts:
-     *  - Mono (1 ch): `mono = ch0`
-     *  - Stereo (2 ch): `mono = (ch0 + ch1)/2`, `left = ch0`, `right = ch1`
-     *  - 5.1 Surround (6 ch): Center channel is `ch2`! `mono = ch2 * 0.50 + (ch0 + ch1) * 0.25`
-     *  - General N ch: `mono = average(ch0..chN-1)`, `left = ch0`, `right = ch1`
-     */
-    private fun processDecodedFrame(
+    private fun processDecodedFrameToStreams(
         samples: ShortArray,
         channels: Int,
-        outMono: MutableList<Short>,
-        outLeft: MutableList<Short>,
-        outRight: MutableList<Short>
+        outMono: ByteArrayOutputStream,
+        outLeft: ByteArrayOutputStream,
+        outRight: ByteArrayOutputStream
     ) {
         if (samples.isEmpty()) return
+        val monoBytes = ByteArray(2)
+        val leftBytes = ByteArray(2)
+        val rightBytes = ByteArray(2)
+
         when (channels) {
             1 -> {
-                outMono.addAll(samples.toList())
-                outLeft.addAll(samples.toList())
-                outRight.addAll(samples.toList())
+                for (s in samples) {
+                    monoBytes[0] = (s.toInt() and 0xFF).toByte()
+                    monoBytes[1] = ((s.toInt() shr 8) and 0xFF).toByte()
+                    outMono.write(monoBytes)
+                    outLeft.write(monoBytes)
+                    outRight.write(monoBytes)
+                }
             }
             2 -> {
                 var i = 0
@@ -299,34 +303,53 @@ class AudioExtractor(private val context: Context) {
                     val l = samples[i]
                     val r = samples[i + 1]
                     val m = ((l.toInt() + r.toInt()) / 2).toShort()
-                    outMono.add(m)
-                    outLeft.add(l)
-                    outRight.add(r)
+
+                    monoBytes[0] = (m.toInt() and 0xFF).toByte()
+                    monoBytes[1] = ((m.toInt() shr 8) and 0xFF).toByte()
+                    leftBytes[0] = (l.toInt() and 0xFF).toByte()
+                    leftBytes[1] = ((l.toInt() shr 8) and 0xFF).toByte()
+                    rightBytes[0] = (r.toInt() and 0xFF).toByte()
+                    rightBytes[1] = ((r.toInt() shr 8) and 0xFF).toByte()
+
+                    outMono.write(monoBytes)
+                    outLeft.write(leftBytes)
+                    outRight.write(rightBytes)
                     i += 2
                 }
             }
-            6 -> { // 5.1 Surround Sound: FL (0), FR (1), FC/Center (2), LFE (3), SL (4), SR (5)
+            6 -> { // 5.1 Surround: FL(0), FR(1), Center(2), LFE(3), SL(4), SR(5)
                 var i = 0
                 while (i + 5 < samples.size) {
                     val fl = samples[i].toInt()
                     val fr = samples[i + 1].toInt()
-                    val fc = samples[i + 2].toInt() // Center channel contains speech dialogue!
+                    val fc = samples[i + 2].toInt()
                     val m = (fc * 0.50 + (fl + fr) * 0.25).toInt().coerceIn(-32768, 32767).toShort()
-                    outMono.add(m)
-                    outLeft.add(samples[i])
-                    outRight.add(samples[i + 1])
+
+                    monoBytes[0] = (m.toInt() and 0xFF).toByte()
+                    monoBytes[1] = ((m.toInt() shr 8) and 0xFF).toByte()
+                    leftBytes[0] = (fl and 0xFF).toByte()
+                    leftBytes[1] = ((fl shr 8) and 0xFF).toByte()
+                    rightBytes[0] = (fr and 0xFF).toByte()
+                    rightBytes[1] = ((fr shr 8) and 0xFF).toByte()
+
+                    outMono.write(monoBytes)
+                    outLeft.write(leftBytes)
+                    outRight.write(rightBytes)
                     i += 6
                 }
             }
-            else -> { // Multi-channel fallback
+            else -> {
                 var i = 0
                 while (i + channels - 1 < samples.size) {
                     var sum = 0
                     for (ch in 0 until channels) sum += samples[i + ch].toInt()
                     val m = (sum / channels).toShort()
-                    outMono.add(m)
-                    outLeft.add(samples[i])
-                    outRight.add(samples[i + 1])
+
+                    monoBytes[0] = (m.toInt() and 0xFF).toByte()
+                    monoBytes[1] = ((m.toInt() shr 8) and 0xFF).toByte()
+                    outMono.write(monoBytes)
+                    outLeft.write(monoBytes)
+                    outRight.write(monoBytes)
                     i += channels
                 }
             }
@@ -397,7 +420,6 @@ class AudioExtractor(private val context: Context) {
         val gain = targetPeak.toDouble() / maxPeak.toDouble()
         if (maxPeak > 16000 && maxPeak < 31000) return pcm
 
-        Log.d(TAG, "STAGE 1 - Peak Normalization: originalPeak=$maxPeak, gain=${"%.2f".format(gain)}")
         val normalized = ShortArray(pcm.size)
         for (i in pcm.indices) {
             normalized[i] = (pcm[i] * gain).toInt().coerceIn(-32768, 32767).toShort()

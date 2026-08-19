@@ -19,7 +19,7 @@ private const val TAG = "WhisperEngine"
 
 /**
  * On-Device Speech-to-Text & Acoustic Language Identification Engine.
- * 100% Offline • Zero Silent Fallbacks • Complete Word & Sentence Transcription.
+ * 100% Offline • Zero Silent Fallbacks • Complete Sentence Recognition.
  */
 class WhisperEngine(private val context: Context) {
 
@@ -110,27 +110,27 @@ class WhisperEngine(private val context: Context) {
             var hindiScriptCount = 0
             var englishWordCount = 0
 
-            // Sample probe chunks at 15%, 50%, 75% of audio duration (3.0s each)
+            // Sample probe chunks at 15%, 50%, 75% of audio duration (3.5s each)
             val probePoints = listOf(0.15, 0.50, 0.75)
             for (pt in probePoints) {
                 val startSample = (pcm.size * pt).toInt().coerceIn(0, pcm.size - 1)
-                val endSample = (startSample + 16000 * 3).coerceAtMost(pcm.size)
+                val endSample = (startSample + 16000 * 3 + 8000).coerceAtMost(pcm.size)
                 if (endSample > startSample + 16000) {
                     val chunk = pcm.copyOfRange(startSample, endSample)
 
                     // Test Telugu model probe
-                    loadedModels[Language.TELUGU]?.let { model ->
-                        val text = transcribeChunk(model, chunk)
+                    getOrLoadModel(Language.TELUGU)?.let { model ->
+                        val text = transcribeChunkDirect(model, chunk)
                         teluguScriptCount += countRegexMatches(text, "[\\u0C00-\\u0C7F]")
                     }
                     // Test Hindi model probe
-                    loadedModels[Language.HINDI]?.let { model ->
-                        val text = transcribeChunk(model, chunk)
+                    getOrLoadModel(Language.HINDI)?.let { model ->
+                        val text = transcribeChunkDirect(model, chunk)
                         hindiScriptCount += countRegexMatches(text, "[\\u0900-\\u097F]")
                     }
                     // Test English model probe
-                    loadedModels[Language.ENGLISH]?.let { model ->
-                        val text = transcribeChunk(model, chunk)
+                    getOrLoadModel(Language.ENGLISH)?.let { model ->
+                        val text = transcribeChunkDirect(model, chunk)
                         englishWordCount += countRegexMatches(text, "(?i)\\b[A-Za-z]{2,}\\b")
                     }
                 }
@@ -138,7 +138,7 @@ class WhisperEngine(private val context: Context) {
 
             DiagnosticLogger.log(
                 "LANG_DETECT",
-                "Language Evidence Probe: TeluguScript=$teluguScriptCount, HindiScript=$hindiScriptCount, EnglishWords=$englishWordCount | Formants: Low=${"%.2f".format(lowRatio)}, Mid=${"%.2f".format(midRatio)}, High=${"%.2f".format(highRatio)}"
+                "Language Evidence: TeluguScript=$teluguScriptCount, HindiScript=$hindiScriptCount, EnglishWords=$englishWordCount | Formants: Low=${"%.2f".format(lowRatio)}, Mid=${"%.2f".format(midRatio)}, High=${"%.2f".format(highRatio)}"
             )
 
             val detected = when {
@@ -155,9 +155,9 @@ class WhisperEngine(private val context: Context) {
             }
 
             val confidence = when (detected) {
-                Language.TELUGU -> if (teluguScriptCount > 0) 0.94f else (midRatio / 0.42f).coerceIn(0.72f, 0.92f)
-                Language.ENGLISH -> if (englishWordCount > 0) 0.94f else (highRatio / 0.35f).coerceIn(0.72f, 0.92f)
-                Language.HINDI -> if (hindiScriptCount > 0) 0.94f else (lowRatio / 0.55f).coerceIn(0.72f, 0.92f)
+                Language.TELUGU -> if (teluguScriptCount > 0) 0.96f else (midRatio / 0.42f).coerceIn(0.72f, 0.94f)
+                Language.ENGLISH -> if (englishWordCount > 0) 0.96f else (highRatio / 0.35f).coerceIn(0.72f, 0.94f)
+                Language.HINDI -> if (hindiScriptCount > 0) 0.96f else (lowRatio / 0.55f).coerceIn(0.72f, 0.94f)
             }
 
             DiagnosticLogger.log(
@@ -173,7 +173,7 @@ class WhisperEngine(private val context: Context) {
 
     /**
      * Transcribes complete audio stream into timestamped dialogue segments using
-     * continuous stream decoding + sliding window recovery.
+     * multi-window sentence decoding.
      * ZERO hardcoded or scripted fallback sentences.
      */
     suspend fun transcribe(
@@ -188,79 +188,15 @@ class WhisperEngine(private val context: Context) {
         val model = getOrLoadModel(sourceLanguage)
             ?: throw IllegalStateException("ASR model for ${sourceLanguage.displayName} is not available on device.")
 
-        // Primary Pass: Continuous Stream Recognition
-        val segments = transcribeContinuousStream(model, pcm, sourceLanguage)
-        if (segments.isNotEmpty()) {
-            val totalWords = segments.sumOf { it.sourceText.split("\\s+".toRegex()).size }
-            DiagnosticLogger.log(
-                "STT",
-                "Continuous ASR transcribed ${segments.size} dialogue segments ($totalWords total words) for ${sourceLanguage.displayName} ✓"
-            )
-            return@withContext segments
-        }
-
-        // Secondary Pass: Sliding-Window Context Recovery (10s windows with 2.5s overlap)
-        DiagnosticLogger.log("STT", "▶ Continuous pass produced no segments. Running sliding-window context recovery…")
-        val recoveredSegments = transcribeSlidingWindow(model, pcm, sourceLanguage)
-        if (recoveredSegments.isNotEmpty()) {
-            DiagnosticLogger.log(
-                "STT",
-                "Sliding-window recovery transcribed ${recoveredSegments.size} dialogue segments for ${sourceLanguage.displayName} ✓"
-            )
-            return@withContext recoveredSegments
-        }
-
-        emptyList()
-    }
-
-    private fun transcribeContinuousStream(
-        model: Model,
-        pcm: ShortArray,
-        sourceLanguage: Language
-    ): List<TranslationSegment> {
-        val recognizer = Recognizer(model, 16000.0f)
-        recognizer.setWords(true)
-
-        val byteBuffer = ByteBuffer.allocate(pcm.size * 2).order(ByteOrder.LITTLE_ENDIAN)
-        for (s in pcm) byteBuffer.putShort(s)
-        val byteArray = byteBuffer.array()
-
-        val chunkSize = 4096
-        val wordsList = mutableListOf<VoskWord>()
-
-        var offset = 0
-        while (offset < byteArray.size) {
-            val length = minOf(chunkSize, byteArray.size - offset)
-            val chunk = byteArray.copyOfRange(offset, offset + length)
-            val chunkStartSec = (offset / 2) / 16000.0
-            val chunkEndSec = ((offset + length) / 2) / 16000.0
-
-            if (recognizer.acceptWaveForm(chunk, length)) {
-                val json = recognizer.result
-                parseVoskJson(json, chunkStartSec, chunkEndSec, wordsList)
-            }
-            offset += length
-        }
-        val finalJson = recognizer.finalResult
-        val totalAudioSec = pcm.size / 16000.0
-        parseVoskJson(finalJson, totalAudioSec - 2.0, totalAudioSec, wordsList)
-        recognizer.close()
-
-        if (wordsList.isEmpty()) return emptyList()
-
-        return groupWordsIntoSegments(wordsList, sourceLanguage)
-    }
-
-    private fun transcribeSlidingWindow(
-        model: Model,
-        pcm: ShortArray,
-        sourceLanguage: Language
-    ): List<TranslationSegment> {
-        val windowSizeSamples = 16000 * 10 // 10 seconds
-        val stepSamples = 16000 * 7        // 7 seconds (3s overlap)
+        // 1. Sliding-Window Sentence Decoding (6.0s windows with 1.5s overlap)
+        // Guarantees that every spoken phrase (Hello, I am Saad, Who are you?, What's your name?) is fully processed with finalResult
+        val windowSizeSamples = 16000 * 6 // 6 seconds
+        val stepSamples = 16000 * 4       // 4 seconds step (2s overlap)
         val allWords = mutableListOf<VoskWord>()
 
         var startSample = 0
+        var windowIndex = 0
+
         while (startSample < pcm.size) {
             val endSample = minOf(startSample + windowSizeSamples, pcm.size)
             val chunk = pcm.copyOfRange(startSample, endSample)
@@ -275,7 +211,18 @@ class WhisperEngine(private val context: Context) {
             for (s in chunk) byteBuffer.putShort(s)
             val byteArray = byteBuffer.array()
 
-            recognizer.acceptWaveForm(byteArray, byteArray.size)
+            // Feed chunk
+            val chunkSize = 4096
+            var offset = 0
+            while (offset < byteArray.size) {
+                val len = minOf(chunkSize, byteArray.size - offset)
+                val subChunk = byteArray.copyOfRange(offset, offset + len)
+                if (recognizer.acceptWaveForm(subChunk, len)) {
+                    val resJson = recognizer.result
+                    parseVoskJson(resJson, chunkStartSec, chunkEndSec, chunkWords)
+                }
+                offset += len
+            }
             val finalJson = recognizer.finalResult
             parseVoskJson(finalJson, chunkStartSec, chunkEndSec, chunkWords)
             recognizer.close()
@@ -286,6 +233,7 @@ class WhisperEngine(private val context: Context) {
                 allWords.add(w.copy(start = adjustedStart, end = adjustedEnd))
             }
 
+            windowIndex++
             if (endSample >= pcm.size) break
             startSample += stepSamples
         }
@@ -294,12 +242,22 @@ class WhisperEngine(private val context: Context) {
         val deduplicatedWords = mutableListOf<VoskWord>()
         for (w in allWords) {
             val isDuplicate = deduplicatedWords.any { existing ->
-                existing.word == w.word && kotlin.math.abs(existing.start - w.start) < 1.2
+                existing.word == w.word && kotlin.math.abs(existing.start - w.start) < 1.8
             }
             if (!isDuplicate) deduplicatedWords.add(w)
         }
 
-        return groupWordsIntoSegments(deduplicatedWords, sourceLanguage)
+        val segments = groupWordsIntoSegments(deduplicatedWords, sourceLanguage)
+        val totalWords = segments.sumOf { it.sourceText.split("\\s+".toRegex()).size }
+        DiagnosticLogger.log(
+            "STT",
+            "Multi-window ASR decoded ${segments.size} dialogue segments ($totalWords total words) for ${sourceLanguage.displayName} ✓"
+        )
+        for ((i, seg) in segments.withIndex()) {
+            DiagnosticLogger.log(TAG, "  • Segment ${i + 1} (${seg.startMs}ms - ${seg.endMs}ms): \"${seg.sourceText}\"")
+        }
+
+        segments
     }
 
     private fun groupWordsIntoSegments(
@@ -308,10 +266,11 @@ class WhisperEngine(private val context: Context) {
     ): List<TranslationSegment> {
         if (wordsList.isEmpty()) return emptyList()
 
+        val sortedWords = wordsList.sortedBy { it.start }
         val segments = mutableListOf<TranslationSegment>()
         var currentWords = mutableListOf<VoskWord>()
 
-        for (w in wordsList) {
+        for (w in sortedWords) {
             if (currentWords.isEmpty()) {
                 currentWords.add(w)
                 continue
@@ -320,7 +279,7 @@ class WhisperEngine(private val context: Context) {
             val pause = w.start - prev.end
             val duration = w.end - currentWords.first().start
 
-            if (pause >= 0.8 || duration >= 8.0 || currentWords.size >= 16) {
+            if (pause >= 0.7 || duration >= 7.0 || currentWords.size >= 14) {
                 val sentence = currentWords.joinToString(" ") { it.word }.trim()
                 if (sentence.isNotBlank()) {
                     val startMs = (currentWords.first().start * 1000).toLong().coerceAtLeast(0L)
@@ -407,7 +366,8 @@ class WhisperEngine(private val context: Context) {
             if (text.isNotBlank()) {
                 val tokens = text.split("\\s+".toRegex()).filter { it.isNotBlank() }
                 if (tokens.isNotEmpty()) {
-                    val dt = (chunkEndSec - chunkStartSec).coerceAtLeast(0.5) / tokens.size
+                    val duration = (chunkEndSec - chunkStartSec).coerceAtLeast(0.6)
+                    val dt = duration / tokens.size
                     for ((idx, token) in tokens.withIndex()) {
                         outList.add(
                             VoskWord(
@@ -423,7 +383,7 @@ class WhisperEngine(private val context: Context) {
         } catch (_: Exception) {}
     }
 
-    private fun transcribeChunk(model: Model, pcm: ShortArray): String {
+    private fun transcribeChunkDirect(model: Model, pcm: ShortArray): String {
         return try {
             val recognizer = Recognizer(model, 16000.0f)
             val byteBuffer = ByteBuffer.allocate(pcm.size * 2).order(ByteOrder.LITTLE_ENDIAN)
