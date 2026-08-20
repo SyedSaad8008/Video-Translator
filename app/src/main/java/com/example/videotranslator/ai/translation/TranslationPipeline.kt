@@ -10,19 +10,20 @@ import kotlinx.coroutines.withContext
 private const val TAG = "TranslationPipeline"
 
 /**
- * Context-Aware Translation Pipeline Coordinator.
- * Translates transcription segments into English, Hindi, and Telugu using sliding context window.
+ * Context-Aware & Proper-Noun Protected Translation Pipeline Coordinator.
+ * Translates transcription segments into English, Hindi, and Telugu using entity masking and restoration.
  * Strictly validates non-empty translated results.
  */
 class TranslationPipeline(private val context: Context) {
 
     private val engine = NllbTranslationEngine(context)
+    private val entityProtector = EntityProtectionEngine()
 
     suspend fun load() = engine.load()
     fun close() = engine.close()
 
     /**
-     * Translates a list of transcription segments across target languages.
+     * Translates a list of transcription segments across target languages with proper-noun protection.
      */
     suspend fun translateSegments(
         segments: List<TranslationSegment>,
@@ -30,7 +31,7 @@ class TranslationPipeline(private val context: Context) {
     ): List<TranslationSegment> = withContext(Dispatchers.IO) {
         if (segments.isEmpty()) return@withContext emptyList()
 
-        DiagnosticLogger.log(TAG, "STAGE 4 - Translating ${segments.size} segments from ${sourceLanguage.displayName} across all target tracks…")
+        DiagnosticLogger.log(TAG, "STAGE 4 - Translating ${segments.size} segments from ${sourceLanguage.displayName} across all target tracks with Entity Protection…")
 
         val results = mutableListOf<TranslationSegment>()
 
@@ -51,24 +52,35 @@ class TranslationPipeline(private val context: Context) {
                 throw IllegalStateException("Cannot translate segment ${seg.id} because source speech text is blank.")
             }
 
-            // 1. Translate to English
-            val enText = if (sourceLanguage == Language.ENGLISH) cleanedSource
-            else engine.translate(cleanedSource, sourceLanguage, Language.ENGLISH, prevText, nextText)
+            // STEP 1: Proper-Noun & Named Entity Protection (Masking)
+            val maskResult = entityProtector.maskEntities(cleanedSource, sourceLanguage)
+            val maskedSource = maskResult.maskedText
+            val entityMap = maskResult.entityMap
+            if (entityMap.isNotEmpty()) {
+                DiagnosticLogger.log("NER", "Protected ${entityMap.size} entities in segment ${seg.id}: ${entityMap.keys} ✓")
+            }
 
-            // 2. Translate to Telugu
-            val teText = if (sourceLanguage == Language.TELUGU) cleanedSource
-            else engine.translate(cleanedSource, sourceLanguage, Language.TELUGU, prevText, nextText)
+            // STEP 2: Sentence-Level Neural Translation
+            val enRaw = if (sourceLanguage == Language.ENGLISH) maskedSource
+            else engine.translate(maskedSource, sourceLanguage, Language.ENGLISH, prevText, nextText)
 
-            // 3. Translate to Hindi
-            val hiText = if (sourceLanguage == Language.HINDI) cleanedSource
-            else engine.translate(cleanedSource, sourceLanguage, Language.HINDI, prevText, nextText)
+            val teRaw = if (sourceLanguage == Language.TELUGU) maskedSource
+            else engine.translate(maskedSource, sourceLanguage, Language.TELUGU, prevText, nextText)
+
+            val hiRaw = if (sourceLanguage == Language.HINDI) maskedSource
+            else engine.translate(maskedSource, sourceLanguage, Language.HINDI, prevText, nextText)
+
+            // STEP 3: Restore Proper Nouns with Target-Language Transliteration
+            val enFinal = entityProtector.restoreEntities(enRaw, entityMap, Language.ENGLISH)
+            val teFinal = entityProtector.restoreEntities(teRaw, entityMap, Language.TELUGU)
+            val hiFinal = entityProtector.restoreEntities(hiRaw, entityMap, Language.HINDI)
 
             results.add(
                 seg.copy(
                     sourceText = cleanedSource,
-                    english = enText,
-                    telugu = teText,
-                    hindi = hiText
+                    english = enFinal,
+                    telugu = teFinal,
+                    hindi = hiFinal
                 )
             )
         }

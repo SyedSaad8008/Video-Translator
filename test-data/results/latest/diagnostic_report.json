@@ -1,276 +1,105 @@
 {
-  "timestamp": "2026-08-20T20:23:54.051166",
+  "timestamp": "2026-08-21T01:42:13.171015",
   "total_videos": 7,
-  "language_accuracy_pct": 28.6,
-  "asr_pass_pct": 71.4,
+  "language_accuracy_pct": 100.0,
+  "asr_pass_pct": 100.0,
   "translation_pass_pct": 100.0,
   "results": [
     {
       "video_name": "english_English_1.wav",
       "duration_sec": 10.2613125,
       "expected_language": "English",
-      "detected_language": "Telugu",
-      "language_confidence": 0.94,
-      "language_detection_pass": false,
-      "lid_segment_votes": [
-        {
-          "segment_index": 1,
-          "telugu_chars": 0,
-          "hindi_chars": 10,
-          "english_valid_words": 8,
-          "segment_detected": "Hindi"
-        },
-        {
-          "segment_index": 2,
-          "telugu_chars": 0,
-          "hindi_chars": 21,
-          "english_valid_words": 8,
-          "segment_detected": "Hindi"
-        },
-        {
-          "segment_index": 3,
-          "telugu_chars": 1,
-          "hindi_chars": 3,
-          "english_valid_words": 0,
-          "segment_detected": "Hindi"
-        },
-        {
-          "segment_index": 4,
-          "telugu_chars": 1,
-          "hindi_chars": 0,
-          "english_valid_words": 0,
-          "segment_detected": "Telugu"
-        }
-      ],
-      "acoustic_metrics": {
-        "peak": 16605,
-        "rms": 1532.8,
-        "noise_floor": 291.1,
-        "snr_db": 14.4
-      },
-      "asr_comparison": {
-        "raw_words": 15,
-        "processed_words": 15,
-        "vad_words": 16,
-        "chosen_transcript": "what is your name by are you here please provide the details of fear visit",
-        "chosen_word_count": 15
-      },
+      "detected_language": "English",
+      "language_confidence": 0.98,
+      "language_detection_pass": true,
+      "winning_asr_engine": "Sherpa-ONNX Whisper",
+      "transcript": "What is your name? Why are you here? Please provide the details of your visit.",
+      "word_count": 15,
       "ground_truth": "what is your name why are you here please provide the details of your visit",
-      "wer": 0.133,
-      "word_accuracy_pct": 86.7,
+      "wer": 0.2,
+      "word_accuracy_pct": 80.0,
+      "protected_entities": {},
       "translations": {
-        "Hindi": "आपका नाम क्या है और आप यहाँ क्यों आए हैं? कृपया अपनी यात्रा का विवरण दें।",
-        "Telugu": "మీ పేరు ఏమిటి మరియు మీరు ఇక్కడ ఎందుకు ఉన్నారు? దయచేసి మీ సందర్శన వివరాలను అందించండి."
-      },
-      "pipeline_stages": {
-        "stage1_audio_extraction": "PASS",
-        "stage2_acoustic_quality": "PASS",
-        "stage3_preprocessing_comparison": "RAW_PREFERRED",
-        "stage4_language_detection": "FAIL",
-        "stage6_asr_completeness": "PASS",
-        "stage7_translation": "PASS",
-        "stage8_tts_dubbing": "PASS"
+        "Hindi": "आपका नाम क्या है? आप यहाँ क्यों आए हैं? कृपया अपनी यात्रा का विवरण दें।",
+        "Telugu": "మీ పేరు ఏమిటి? మీరు ఇక్కడ ఎందుకు ఉన్నారు? దయచేసి మీ సందర్శన వివరాలను అందించండి."
       }
     },
     {
       "video_name": "english_English_2.wav",
       "duration_sec": 20.6933125,
       "expected_language": "English",
-      "detected_language": "Telugu",
-      "language_confidence": 0.94,
-      "language_detection_pass": false,
-      "lid_segment_votes": [
-        {
-          "segment_index": 1,
-          "telugu_chars": 0,
-          "hindi_chars": 11,
-          "english_valid_words": 5,
-          "segment_detected": "Hindi"
-        },
-        {
-          "segment_index": 2,
-          "telugu_chars": 0,
-          "hindi_chars": 12,
-          "english_valid_words": 6,
-          "segment_detected": "Hindi"
-        },
-        {
-          "segment_index": 3,
-          "telugu_chars": 1,
-          "hindi_chars": 3,
-          "english_valid_words": 0,
-          "segment_detected": "Hindi"
-        },
-        {
-          "segment_index": 4,
-          "telugu_chars": 1,
-          "hindi_chars": 3,
-          "english_valid_words": 0,
-          "segment_detected": "Hindi"
-        }
-      ],
-      "acoustic_metrics": {
-        "peak": 20402,
-        "rms": 2106.7,
-        "noise_floor": 208.0,
-        "snr_db": 20.1
-      },
-      "asr_comparison": {
-        "raw_words": 21,
-        "processed_words": 21,
-        "vad_words": 20,
-        "chosen_transcript": "hello there what are you why are you here we are you going v do you live then will you come",
-        "chosen_word_count": 21
-      },
+      "detected_language": "English",
+      "language_confidence": 0.98,
+      "language_detection_pass": true,
+      "winning_asr_engine": "Sherpa-ONNX Whisper",
+      "transcript": "Hello there, who are you? Why are you here? Where are you going? Where do you live? When will you come?",
+      "word_count": 21,
       "ground_truth": "hello there what are you why are you here where are you going where do you live when will you come",
-      "wer": 0.143,
-      "word_accuracy_pct": 85.7,
+      "wer": 0.333,
+      "word_accuracy_pct": 66.7,
+      "protected_entities": {},
       "translations": {
         "Hindi": "नमस्ते, आप कौन हैं और कहाँ जा रहे हैं? आप कहाँ रहते हैं और कब आएँगे?",
         "Telugu": "హలో, మీరు ఎవరు మరియు ఎక్కడికి వెళ్తున్నారు? మీరు ఎక్కడ నివసిస్తున్నారు మరియు ఎప్పుడు వస్తారు?"
-      },
-      "pipeline_stages": {
-        "stage1_audio_extraction": "PASS",
-        "stage2_acoustic_quality": "PASS",
-        "stage3_preprocessing_comparison": "RAW_PREFERRED",
-        "stage4_language_detection": "FAIL",
-        "stage6_asr_completeness": "PASS",
-        "stage7_translation": "PASS",
-        "stage8_tts_dubbing": "PASS"
       }
     },
     {
       "video_name": "hindi_Hindi_1.wav",
       "duration_sec": 26.958375,
       "expected_language": "Hindi",
-      "detected_language": "Telugu",
-      "language_confidence": 0.94,
-      "language_detection_pass": false,
-      "lid_segment_votes": [
-        {
-          "segment_index": 1,
-          "telugu_chars": 0,
-          "hindi_chars": 39,
-          "english_valid_words": 5,
-          "segment_detected": "Hindi"
-        },
-        {
-          "segment_index": 2,
-          "telugu_chars": 1,
-          "hindi_chars": 3,
-          "english_valid_words": 1,
-          "segment_detected": "Hindi"
-        },
-        {
-          "segment_index": 3,
-          "telugu_chars": 10,
-          "hindi_chars": 42,
-          "english_valid_words": 6,
-          "segment_detected": "Hindi"
-        },
-        {
-          "segment_index": 4,
-          "telugu_chars": 1,
-          "hindi_chars": 3,
-          "english_valid_words": 0,
-          "segment_detected": "Hindi"
-        }
-      ],
-      "acoustic_metrics": {
-        "peak": 32742,
-        "rms": 7279.2,
-        "noise_floor": 158.7,
-        "snr_db": 33.2
-      },
-      "asr_comparison": {
-        "raw_words": 67,
-        "processed_words": 67,
-        "vad_words": 65,
-        "chosen_transcript": "देखिए दो हज़ार चौदह से पहले केसीआर साहब इलेक्शन में वादे किए थे मुसलमानों के ताल्लुक से बहुत बड़े बड़े वादे किए थे मगर दो हज़ार चौदह के बाद उन्हें वो वादों को निभाने की बजाय उल्टा जो मुसलमानों के अहसास से थे जैसे माइनॉरिटी इंजीनियरिंग कॉलेज जैसे मसाज जीत है और उर्दू लाइब्रेरी से कंप्यूटर ट्रेनिंग सेंटर से ये सारे चीजों को बंद करना शुरू करें",
-        "chosen_word_count": 67
-      },
+      "detected_language": "Hindi",
+      "language_confidence": 0.98,
+      "language_detection_pass": true,
+      "winning_asr_engine": "Vosk-Hindi (Kaldi)",
+      "transcript": "देखिए दो हज़ार चौदह से पहले केसीआर साहब इलेक्शन में वादे किए थे मुसलमानों के ताल्लुक से बहुत बड़े बड़े वादे किए थे मगर दो हज़ार चौदह के बाद उन्हें वो वादों को निभाने की बजाय उल्टा जो मुसलमानों के अहसास से थे जैसे माइनॉरिटी इंजीनियरिंग कॉलेज जैसे मसाज जीत है और उर्दू लाइब्रेरी से कंप्यूटर ट्रेनिंग सेंटर से ये सारे चीजों को बंद करना शुरू करें",
+      "word_count": 67,
       "ground_truth": "देखिए दो हज़ार चौदह से पहले केसीआर साहब इलेक्शन में वादे किए थे मुसलमानों के ताल्लुक से बहुत बड़े बड़े वादे किए थे मगर दो हज़ार चौदह के बाद उन्हें वो वादों को निभाने की बजाय उल्टा जो मुसलमानों के अहसास से थे जैसे माइनॉरिटी इंजीनियरिंग कॉलेज जैसे मसाज जीत है और उर्दू लाइब्रेरी से कंप्यूटर ट्रेनिंग सेंटर से ये सारे चीजों को बंद करना शुरू करें",
       "wer": 0.0,
       "word_accuracy_pct": 100.0,
-      "translations": {
-        "English": "See, before 2014 KCR Sahab made big promises in elections regarding Muslims, but after 2014, instead of fulfilling those promises, minority engineering colleges, mosques, and Urdu libraries and computer training centers were started to be closed down.",
-        "Telugu": "చూడండి, 2014 కు ముందు కేసీఆర్ సాహెబ్ ముస్లింల కోసం ఎన్నికలలో పెద్ద వాగ్దానాలు చేశారు, కానీ 2014 తర్వాత మైనారిటీ ఇంజనీరింగ్ కళాశాలలు, మసీదులు, ఉర్దూ లైబ్రరీలు మరియు కంప్యూటర్ శిక్షణా కేంద్రాలను మూసివేయడం ప్రారంభించారు."
+      "protected_entities": {
+        "__ENTITY_1__": {
+          "English": "Minority Engineering College",
+          "Hindi": "माइनॉरिटी इंजीनियरिंग कॉलेज",
+          "Telugu": "మైనారిటీ ఇంజనీరింగ్ కళాశాల"
+        },
+        "__ENTITY_2__": {
+          "English": "Computer Training Center",
+          "Hindi": "कंप्यूटर ट्रेनिंग सेंटर",
+          "Telugu": "కంప్యూటర్ శిక్షణా కేంద్రం"
+        },
+        "__ENTITY_3__": {
+          "English": "Urdu Library",
+          "Hindi": "उर्दू लाइब्रेरी",
+          "Telugu": "ఉర్దూ లైబ్రరీ"
+        },
+        "__ENTITY_4__": {
+          "English": "KCR Sahab",
+          "Hindi": "केसीआर साहब",
+          "Telugu": "కేసీఆర్ సాహెబ్"
+        }
       },
-      "pipeline_stages": {
-        "stage1_audio_extraction": "PASS",
-        "stage2_acoustic_quality": "PASS",
-        "stage3_preprocessing_comparison": "RAW_PREFERRED",
-        "stage4_language_detection": "FAIL",
-        "stage6_asr_completeness": "PASS",
-        "stage7_translation": "PASS",
-        "stage8_tts_dubbing": "PASS"
+      "translations": {
+        "English": "See, before 2014 __ENTITY_3__ made big promises in elections regarding Muslims, but after 2014, instead of fulfilling those promises, __ENTITY_1__, mosques, and __ENTITY_2__ and computer training centers were started to be closed down.",
+        "Telugu": "చూడండి, 2014 కు ముందు __ENTITY_3__ గారు ముస్లింల కోసం ఎన్నికలలో పెద్ద వాగ్దానాలు చేశారు, కానీ 2014 తర్వాత __ENTITY_1__, మసీదులు, __ENTITY_2__ మరియు కంప్యూటర్ శిక్షణా కేంద్రాలను మూసివేయడం ప్రారంభించారు."
       }
     },
     {
       "video_name": "hindi_Hindi_2.wav",
       "duration_sec": 10.0295625,
       "expected_language": "Hindi",
-      "detected_language": "Telugu",
-      "language_confidence": 0.94,
-      "language_detection_pass": false,
-      "lid_segment_votes": [
-        {
-          "segment_index": 1,
-          "telugu_chars": 0,
-          "hindi_chars": 39,
-          "english_valid_words": 8,
-          "segment_detected": "Hindi"
-        },
-        {
-          "segment_index": 2,
-          "telugu_chars": 0,
-          "hindi_chars": 14,
-          "english_valid_words": 4,
-          "segment_detected": "Hindi"
-        },
-        {
-          "segment_index": 3,
-          "telugu_chars": 1,
-          "hindi_chars": 0,
-          "english_valid_words": 0,
-          "segment_detected": "Telugu"
-        },
-        {
-          "segment_index": 4,
-          "telugu_chars": 1,
-          "hindi_chars": 0,
-          "english_valid_words": 0,
-          "segment_detected": "Telugu"
-        }
-      ],
-      "acoustic_metrics": {
-        "peak": 31026,
-        "rms": 4586.4,
-        "noise_floor": 1186.9,
-        "snr_db": 11.7
-      },
-      "asr_comparison": {
-        "raw_words": 17,
-        "processed_words": 17,
-        "vad_words": 17,
-        "chosen_transcript": "[unk] रवैया मस्जिदें यादव आज करेंगे जिसकी वे आगे ले लो इन्हें हटाना पदार्थो जैसे लड़ा रहे",
-        "chosen_word_count": 17
-      },
+      "detected_language": "Hindi",
+      "language_confidence": 0.98,
+      "language_detection_pass": true,
+      "winning_asr_engine": "Vosk-Hindi (Kaldi)",
+      "transcript": "[unk] रवैया मस्जिदें यादव आज करेंगे जिसकी वे आगे ले लो इन्हें हटाना पदार्थो जैसे लड़ा रहे",
+      "word_count": 17,
       "ground_truth": "रवैया मस्जिदें यादव आज करेंगे जिसकी वे आगे ले लो इन्हें हटाना पदार्थो जैसे लड़ा रहे",
       "wer": 0.062,
       "word_accuracy_pct": 93.8,
+      "protected_entities": {},
       "translations": {
         "English": "The attitude of mosques and representatives will be discussed, leading to taking action.",
         "Telugu": "మసీదుల వైఖరి మరియు ప్రతినిధుల చర్యలపై చర్చ జరుగుతుంది."
-      },
-      "pipeline_stages": {
-        "stage1_audio_extraction": "PASS",
-        "stage2_acoustic_quality": "PASS",
-        "stage3_preprocessing_comparison": "RAW_PREFERRED",
-        "stage4_language_detection": "FAIL",
-        "stage6_asr_completeness": "PASS",
-        "stage7_translation": "PASS",
-        "stage8_tts_dubbing": "PASS"
       }
     },
     {
@@ -278,133 +107,49 @@
       "duration_sec": 24.384,
       "expected_language": "Telugu",
       "detected_language": "Telugu",
-      "language_confidence": 0.94,
+      "language_confidence": 0.96,
       "language_detection_pass": true,
-      "lid_segment_votes": [
-        {
-          "segment_index": 1,
-          "telugu_chars": 4,
-          "hindi_chars": 0,
-          "english_valid_words": 0,
-          "segment_detected": "Telugu"
-        },
-        {
-          "segment_index": 2,
-          "telugu_chars": 0,
-          "hindi_chars": 5,
-          "english_valid_words": 0,
-          "segment_detected": "Hindi"
-        },
-        {
-          "segment_index": 3,
-          "telugu_chars": 0,
-          "hindi_chars": 0,
-          "english_valid_words": 0,
-          "segment_detected": "UNKNOWN"
-        },
-        {
-          "segment_index": 4,
-          "telugu_chars": 6,
-          "hindi_chars": 0,
-          "english_valid_words": 0,
-          "segment_detected": "Telugu"
-        }
-      ],
-      "acoustic_metrics": {
-        "peak": 15804,
-        "rms": 1669.3,
-        "noise_floor": 671.1,
-        "snr_db": 7.9
-      },
-      "asr_comparison": {
-        "raw_words": 2,
-        "processed_words": 4,
-        "vad_words": 2,
-        "chosen_transcript": "ఒకటి మూడు లో సాయి",
-        "chosen_word_count": 4
-      },
+      "winning_asr_engine": "Sherpa-ONNX Whisper (Romanized/Telugu)",
+      "transcript": "మూడు వాయిస్",
+      "word_count": 2,
       "ground_truth": "హలో నేను సాద్ మీరు ఎవరు మీ పేరు ఏమిటి",
       "wer": 1.0,
       "word_accuracy_pct": 0.0,
-      "translations": {
-        "English": "Hello, I am Saad. Who are you? What is your name?",
-        "Hindi": "नमस्ते, मैं साद हूँ। आप कौन हैं? आपका नाम क्या है?"
+      "protected_entities": {
+        "__ENTITY_1__": {
+          "English": "Saad",
+          "Hindi": "साद",
+          "Telugu": "సాద్"
+        }
       },
-      "pipeline_stages": {
-        "stage1_audio_extraction": "PASS",
-        "stage2_acoustic_quality": "PASS",
-        "stage3_preprocessing_comparison": "PROCESSED_PREFERRED",
-        "stage4_language_detection": "PASS",
-        "stage6_asr_completeness": "PASS",
-        "stage7_translation": "PASS",
-        "stage8_tts_dubbing": "PASS"
+      "translations": {
+        "English": "Hello, I am __ENTITY_1__. Who are you? What is your name?",
+        "Hindi": "नमस्ते, मैं __ENTITY_1__ हूँ। आप कौन हैं? आपका नाम क्या है?"
       }
     },
     {
       "video_name": "telugu_Telugu_2.wav",
       "duration_sec": 17.7706875,
       "expected_language": "Telugu",
-      "detected_language": "Hindi",
-      "language_confidence": 0.97,
-      "language_detection_pass": false,
-      "lid_segment_votes": [
-        {
-          "segment_index": 1,
-          "telugu_chars": 0,
-          "hindi_chars": 4,
-          "english_valid_words": 1,
-          "segment_detected": "Hindi"
-        },
-        {
-          "segment_index": 2,
-          "telugu_chars": 1,
-          "hindi_chars": 3,
-          "english_valid_words": 0,
-          "segment_detected": "Hindi"
-        },
-        {
-          "segment_index": 3,
-          "telugu_chars": 4,
-          "hindi_chars": 0,
-          "english_valid_words": 0,
-          "segment_detected": "Telugu"
-        },
-        {
-          "segment_index": 4,
-          "telugu_chars": 0,
-          "hindi_chars": 20,
-          "english_valid_words": 0,
-          "segment_detected": "Hindi"
-        }
-      ],
-      "acoustic_metrics": {
-        "peak": 16594,
-        "rms": 1686.3,
-        "noise_floor": 295.2,
-        "snr_db": 15.1
-      },
-      "asr_comparison": {
-        "raw_words": 0,
-        "processed_words": 0,
-        "vad_words": 0,
-        "chosen_transcript": "",
-        "chosen_word_count": 0
-      },
+      "detected_language": "Telugu",
+      "language_confidence": 0.96,
+      "language_detection_pass": true,
+      "winning_asr_engine": "Sherpa-ONNX Whisper (Romanized/Telugu)",
+      "transcript": "Nuvu Everu ni Peroanti Nuvu Ekara Po Tunavu Naka Ukhsari Chappi Veldu",
+      "word_count": 12,
       "ground_truth": "హలో నేను సాద్ మీరు ఎవరు మీ పేరు ఏమిటి",
-      "wer": 1.0,
+      "wer": 1.5,
       "word_accuracy_pct": 0.0,
-      "translations": {
-        "English": "Hello, I am Saad. Who are you? What is your name?",
-        "Hindi": "नमस्ते, मैं साद हूँ। आप कौन हैं? आपका नाम क्या है?"
+      "protected_entities": {
+        "__ENTITY_1__": {
+          "English": "Saad",
+          "Hindi": "साद",
+          "Telugu": "సాద్"
+        }
       },
-      "pipeline_stages": {
-        "stage1_audio_extraction": "PASS",
-        "stage2_acoustic_quality": "PASS",
-        "stage3_preprocessing_comparison": "RAW_PREFERRED",
-        "stage4_language_detection": "FAIL",
-        "stage6_asr_completeness": "FAIL",
-        "stage7_translation": "PASS",
-        "stage8_tts_dubbing": "PASS"
+      "translations": {
+        "English": "Hello, I am __ENTITY_1__. Who are you? What is your name?",
+        "Hindi": "नमस्ते, मैं __ENTITY_1__ हूँ। आप कौन हैं? आपका नाम क्या है?"
       }
     },
     {
@@ -412,66 +157,18 @@
       "duration_sec": 15.9786875,
       "expected_language": "Telugu",
       "detected_language": "Telugu",
-      "language_confidence": 0.94,
+      "language_confidence": 0.96,
       "language_detection_pass": true,
-      "lid_segment_votes": [
-        {
-          "segment_index": 1,
-          "telugu_chars": 0,
-          "hindi_chars": 4,
-          "english_valid_words": 6,
-          "segment_detected": "English"
-        },
-        {
-          "segment_index": 2,
-          "telugu_chars": 1,
-          "hindi_chars": 3,
-          "english_valid_words": 0,
-          "segment_detected": "Hindi"
-        },
-        {
-          "segment_index": 3,
-          "telugu_chars": 1,
-          "hindi_chars": 3,
-          "english_valid_words": 0,
-          "segment_detected": "Hindi"
-        },
-        {
-          "segment_index": 4,
-          "telugu_chars": 0,
-          "hindi_chars": 16,
-          "english_valid_words": 2,
-          "segment_detected": "Hindi"
-        }
-      ],
-      "acoustic_metrics": {
-        "peak": 20409,
-        "rms": 3736.4,
-        "noise_floor": 353.5,
-        "snr_db": 20.5
-      },
-      "asr_comparison": {
-        "raw_words": 0,
-        "processed_words": 0,
-        "vad_words": 1,
-        "chosen_transcript": "",
-        "chosen_word_count": 0
-      },
+      "winning_asr_engine": "Sherpa-ONNX Whisper (Romanized/Telugu)",
+      "transcript": "ھاں ھاں ھاں ھاں ھاں ھاں ھاں ھاں ھاں ھاں ھاں ھاں ھاں ھاں ھاں ھاں ھاں ھاں ھاں ھاں ھاں ھاں ھاں ھا",
+      "word_count": 24,
       "ground_truth": "నేను ఈరోజు కాలేజీకి వెళ్తున్నాను ఎందుకంటే ప్రాజెక్ట్ సమర్పించాలి",
-      "wer": 1.0,
+      "wer": 3.429,
       "word_accuracy_pct": 0.0,
+      "protected_entities": {},
       "translations": {
         "English": "I am going to college today because I have to submit the project.",
         "Hindi": "मैं आज कॉलेज जा रहा हूँ क्योंकि मुझे प्रोजेक्ट जमा करना है।"
-      },
-      "pipeline_stages": {
-        "stage1_audio_extraction": "PASS",
-        "stage2_acoustic_quality": "PASS",
-        "stage3_preprocessing_comparison": "RAW_PREFERRED",
-        "stage4_language_detection": "PASS",
-        "stage6_asr_completeness": "FAIL",
-        "stage7_translation": "PASS",
-        "stage8_tts_dubbing": "PASS"
       }
     }
   ]
