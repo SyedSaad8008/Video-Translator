@@ -1,0 +1,163 @@
+[
+  {
+    "audio": "english_English_1.wav",
+    "duration_sec": 10.2613125,
+    "expected_language": "english",
+    "detected_language": "English",
+    "models": {
+      "English": {
+        "transcript": "what is your name by are you here please provide the details of fear visit",
+        "word_count": 15,
+        "elapsed_sec": 3.22
+      },
+      "Hindi": {
+        "transcript": "वॉट ने योग या प्रिंस प्रोवाइड डीटीएस ऑफ ईयर विजेट",
+        "word_count": 10,
+        "elapsed_sec": 9.14
+      },
+      "Telugu": {
+        "transcript": "",
+        "word_count": 0,
+        "elapsed_sec": 1.89
+      }
+    }
+  },
+  {
+    "audio": "english_English_2.wav",
+    "duration_sec": 20.6933125,
+    "expected_language": "english",
+    "detected_language": "English",
+    "models": {
+      "English": {
+        "transcript": "hello there what are you why are you here we are you going v do you live then will you come",
+        "word_count": 21,
+        "elapsed_sec": 4.03
+      },
+      "Hindi": {
+        "transcript": "अवॉर्ड फॉर यू वहीं यूपीए मेयर आयुक्त गोइंग वे यूनिट वेन विल यू कम",
+        "word_count": 14,
+        "elapsed_sec": 7.91
+      },
+      "Telugu": {
+        "transcript": "",
+        "word_count": 0,
+        "elapsed_sec": 2.65
+      }
+    }
+  },
+  {
+    "audio": "hindi_Hindi_1.wav",
+    "duration_sec": 26.958375,
+    "expected_language": "hindi",
+    "detected_language": "English",
+    "models": {
+      "English": {
+        "transcript": "nick a though that told us it barely get the isobel it's in nevada get him some on get see what bravado whatever they get the mother don't act like your bad one who will why don't we need one hundred give a day or dar uma some will get a society this a minority community colleges a massage did hey aura or do lab ladies say computer training centers a yes had a to the would have been commercial gary",
+        "word_count": 81,
+        "elapsed_sec": 11.72
+      },
+      "Hindi": {
+        "transcript": "देखिए दो हज़ार चौदह से पहले केसीआर साहब इलेक्शन में वादे किए थे मुसलमानों के ताल्लुक से बहुत बड़े बड़े वादे किए थे मगर दो हज़ार चौदह के बाद उन्हें वो वादों को निभाने की बजाय उल्टा जो मुसलमानों के अहसास से थे जैसे माइनॉरिटी इंजीनियरिंग कॉलेज जैसे मसाज जीत है और उर्दू लाइब्रेरी से कंप्यूटर ट्रेनिंग सेंटर से ये सारे चीजों को बंद करना शुरू करें",
+        "word_count": 67,
+        "elapsed_sec": 9.5
+      },
+      "Telugu": {
+        "transcript": "బుడిబుడి",
+        "word_count": 1,
+        "elapsed_sec": 3.41
+      }
+    }
+  },
+  {
+    "audio": "hindi_Hindi_2.wav",
+    "duration_sec": 10.0295625,
+    "expected_language": "hindi",
+    "detected_language": "English",
+    "models": {
+      "English": {
+        "transcript": "the way as are the yeah the loitering this even a i get it the now that up without know there's an energetic",
+        "word_count": 23,
+        "elapsed_sec": 6.65
+      },
+      "Hindi": {
+        "transcript": "[unk] रवैया मस्जिदें यादव आज करेंगे जिसकी वे आगे ले लो इन्हें हटाना पदार्थो जैसे लड़ा रहे",
+        "word_count": 17,
+        "elapsed_sec": 8.98
+      },
+      "Telugu": {
+        "transcript": "",
+        "word_count": 0,
+        "elapsed_sec": 1.94
+      }
+    }
+  },
+  {
+    "audio": "telugu_Telugu_1.wav",
+    "duration_sec": 24.384,
+    "expected_language": "telugu",
+    "detected_language": "Telugu",
+    "models": {
+      "English": {
+        "transcript": "",
+        "word_count": 0,
+        "elapsed_sec": 4.38
+      },
+      "Hindi": {
+        "transcript": "मैंने",
+        "word_count": 1,
+        "elapsed_sec": 6.9
+      },
+      "Telugu": {
+        "transcript": "మూడు సాయి",
+        "word_count": 2,
+        "elapsed_sec": 2.31
+      }
+    }
+  },
+  {
+    "audio": "telugu_Telugu_2.wav",
+    "duration_sec": 17.7706875,
+    "expected_language": "telugu",
+    "detected_language": "English",
+    "models": {
+      "English": {
+        "transcript": "no for every me barrel and d novo a couple to novel nah corker city ship be radio",
+        "word_count": 18,
+        "elapsed_sec": 5.47
+      },
+      "Hindi": {
+        "transcript": "नौ सौ पेरू एन्टी वो को तुलना वो लाखों सारी शक्ति वैल्यू",
+        "word_count": 12,
+        "elapsed_sec": 6.49
+      },
+      "Telugu": {
+        "transcript": "",
+        "word_count": 0,
+        "elapsed_sec": 2.26
+      }
+    }
+  },
+  {
+    "audio": "telugu_Telugu_3.wav",
+    "duration_sec": 15.9786875,
+    "expected_language": "telugu",
+    "detected_language": "English",
+    "models": {
+      "English": {
+        "transcript": "let us know what have a debate i'm the million dollars a month wouldn't elaborate not going to go to fight but it would have getting them nino chocolate too much hundred picnic typical natal i'm on the gate statement which and what about it asked to get gonna toward a look at you",
+        "word_count": 54,
+        "elapsed_sec": 11.39
+      },
+      "Hindi": {
+        "transcript": "पटना को ही पॉपुलर मगर है नीनो चालक चुनना टेक्निक्स लिखी में कुछ बता दें यह सोडाला दिली",
+        "word_count": 18,
+        "elapsed_sec": 20.28
+      },
+      "Telugu": {
+        "transcript": "",
+        "word_count": 0,
+        "elapsed_sec": 2.28
+      }
+    }
+  }
+]

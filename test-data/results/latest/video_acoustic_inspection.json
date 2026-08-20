@@ -1,0 +1,226 @@
+[
+  {
+    "file": "english\\English_1.mp4",
+    "category": "english",
+    "filename": "English_1.mp4",
+    "wav_path": "test-data/audio\\english_English_1.wav",
+    "video_codec": "h264",
+    "video_resolution": "478x850",
+    "video_fps": 30.010003334444814,
+    "audio_codec": "aac",
+    "audio_sample_rate": "48000",
+    "audio_channels": 2,
+    "duration_sec": 10.2613125,
+    "peak_amplitude": 16605,
+    "rms_energy": 1532.7723756215923,
+    "noise_floor_rms": 303.36236926048247,
+    "snr_db": 14.07031914448722,
+    "voiced_ratio_percent": 88.58515906225446,
+    "speech_segments_count": 2,
+    "speech_duration_sec": 9.09,
+    "speech_intervals": [
+      {
+        "start_sec": 0.27,
+        "end_sec": 4.59,
+        "duration_sec": 4.32
+      },
+      {
+        "start_sec": 5.46,
+        "end_sec": 10.23,
+        "duration_sec": 4.77
+      }
+    ]
+  },
+  {
+    "file": "english\\English_2.mp4",
+    "category": "english",
+    "filename": "English_2.mp4",
+    "wav_path": "test-data/audio\\english_English_2.wav",
+    "video_codec": "h264",
+    "video_resolution": "478x850",
+    "video_fps": 30.010003334444814,
+    "audio_codec": "aac",
+    "audio_sample_rate": "48000",
+    "audio_channels": 2,
+    "duration_sec": 20.6933125,
+    "peak_amplitude": 20402,
+    "rms_energy": 2106.7367210037746,
+    "noise_floor_rms": 208.15944409674682,
+    "snr_db": 20.104282915756816,
+    "voiced_ratio_percent": 98.14765035805648,
+    "speech_segments_count": 1,
+    "speech_duration_sec": 20.31,
+    "speech_intervals": [
+      {
+        "start_sec": 0.32999999999999996,
+        "end_sec": 20.64,
+        "duration_sec": 20.31
+      }
+    ]
+  },
+  {
+    "file": "hindi\\Hindi_1.mp4",
+    "category": "hindi",
+    "filename": "Hindi_1.mp4",
+    "wav_path": "test-data/audio\\hindi_Hindi_1.wav",
+    "video_codec": "h264",
+    "video_resolution": "478x850",
+    "video_fps": 30.0,
+    "audio_codec": "aac",
+    "audio_sample_rate": "44100",
+    "audio_channels": 2,
+    "duration_sec": 26.958375,
+    "peak_amplitude": 32742,
+    "rms_energy": 7279.160487419223,
+    "noise_floor_rms": 316.4851398565184,
+    "snr_db": 27.234559429897875,
+    "voiced_ratio_percent": 94.14514042482159,
+    "speech_segments_count": 2,
+    "speech_duration_sec": 25.38,
+    "speech_intervals": [
+      {
+        "start_sec": 0.87,
+        "end_sec": 11.16,
+        "duration_sec": 10.29
+      },
+      {
+        "start_sec": 11.82,
+        "end_sec": 26.91,
+        "duration_sec": 15.09
+      }
+    ]
+  },
+  {
+    "file": "hindi\\Hindi_2.mp4",
+    "category": "hindi",
+    "filename": "Hindi_2.mp4",
+    "wav_path": "test-data/audio\\hindi_Hindi_2.wav",
+    "video_codec": "h264",
+    "video_resolution": "576x1024",
+    "video_fps": 31.57894736842105,
+    "audio_codec": "aac",
+    "audio_sample_rate": "44100",
+    "audio_channels": 2,
+    "duration_sec": 10.0295625,
+    "peak_amplitude": 31026,
+    "rms_energy": 4586.354898720246,
+    "noise_floor_rms": 1198.5268292435787,
+    "snr_db": 11.656397955675812,
+    "voiced_ratio_percent": 67.00192555757043,
+    "speech_segments_count": 4,
+    "speech_duration_sec": 6.72,
+    "speech_intervals": [
+      {
+        "start_sec": 0.0,
+        "end_sec": 1.05,
+        "duration_sec": 1.05
+      },
+      {
+        "start_sec": 1.95,
+        "end_sec": 4.05,
+        "duration_sec": 2.1
+      },
+      {
+        "start_sec": 5.76,
+        "end_sec": 6.6899999999999995,
+        "duration_sec": 0.9299999999999999
+      },
+      {
+        "start_sec": 7.35,
+        "end_sec": 9.99,
+        "duration_sec": 2.6399999999999997
+      }
+    ]
+  },
+  {
+    "file": "telugu\\Telugu_1.mp4",
+    "category": "telugu",
+    "filename": "Telugu_1.mp4",
+    "wav_path": "test-data/audio\\telugu_Telugu_1.wav",
+    "video_codec": "h264",
+    "video_resolution": "848x478",
+    "video_fps": 30.010003334444814,
+    "audio_codec": "aac",
+    "audio_sample_rate": "48000",
+    "audio_channels": 2,
+    "duration_sec": 24.384,
+    "peak_amplitude": 15804,
+    "rms_energy": 1669.348659576465,
+    "noise_floor_rms": 757.0950842969902,
+    "snr_db": 6.867932527218747,
+    "voiced_ratio_percent": 87.96751968503936,
+    "speech_segments_count": 2,
+    "speech_duration_sec": 21.45,
+    "speech_intervals": [
+      {
+        "start_sec": 1.1099999999999999,
+        "end_sec": 2.2199999999999998,
+        "duration_sec": 1.1099999999999999
+      },
+      {
+        "start_sec": 3.9899999999999998,
+        "end_sec": 24.33,
+        "duration_sec": 20.34
+      }
+    ]
+  },
+  {
+    "file": "telugu\\Telugu_2.mp4",
+    "category": "telugu",
+    "filename": "Telugu_2.mp4",
+    "wav_path": "test-data/audio\\telugu_Telugu_2.wav",
+    "video_codec": "h264",
+    "video_resolution": "478x850",
+    "video_fps": 30.010003334444814,
+    "audio_codec": "aac",
+    "audio_sample_rate": "48000",
+    "audio_channels": 2,
+    "duration_sec": 17.7706875,
+    "peak_amplitude": 16594,
+    "rms_energy": 1686.337508521112,
+    "noise_floor_rms": 300.80173425918497,
+    "snr_db": 14.973283282468682,
+    "voiced_ratio_percent": 97.57641621912488,
+    "speech_segments_count": 1,
+    "speech_duration_sec": 17.34,
+    "speech_intervals": [
+      {
+        "start_sec": 0.39,
+        "end_sec": 17.73,
+        "duration_sec": 17.34
+      }
+    ]
+  },
+  {
+    "file": "telugu\\Telugu_3.mp4",
+    "category": "telugu",
+    "filename": "Telugu_3.mp4",
+    "wav_path": "test-data/audio\\telugu_Telugu_3.wav",
+    "video_codec": "h264",
+    "video_resolution": "848x478",
+    "video_fps": 30.0,
+    "audio_codec": "aac",
+    "audio_sample_rate": "48000",
+    "audio_channels": 2,
+    "duration_sec": 15.9786875,
+    "peak_amplitude": 20409,
+    "rms_energy": 3736.3979863613285,
+    "noise_floor_rms": 389.27276480209434,
+    "snr_db": 19.643982193707366,
+    "voiced_ratio_percent": 92.5607938699596,
+    "speech_segments_count": 2,
+    "speech_duration_sec": 14.79,
+    "speech_intervals": [
+      {
+        "start_sec": 0.09,
+        "end_sec": 7.319999999999999,
+        "duration_sec": 7.2299999999999995
+      },
+      {
+        "start_sec": 8.37,
+        "end_sec": 15.93,
+        "duration_sec": 7.56
+      }
+    ]
+  }
+]

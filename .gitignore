@@ -22,3 +22,8 @@ local.properties
 *.mp4.pcm
 *.png
 vosk_model/
+test-data/models/
+test-data/audio/
+test-data/videos/
+*.bin
+

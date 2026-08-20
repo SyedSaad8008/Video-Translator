@@ -1,0 +1,92 @@
+{
+  "timestamp": "2026-08-20T16:38:04.153675",
+  "total_videos": 7,
+  "language_accuracy_pct": 28.57142857142857,
+  "total_words": 161,
+  "results": [
+    {
+      "video_audio": "english_English_1.wav",
+      "duration_sec": 10.2613125,
+      "expected_language": "English",
+      "detected_language": "Hindi",
+      "language_confidence": 0.95,
+      "language_correct": false,
+      "transcript": "what is your name by are you here you here please provide the details the details of a visit",
+      "word_count": 19,
+      "reference_truth": "what is your name why are you here please provide the details of your visit",
+      "elapsed_sec": 29.84
+    },
+    {
+      "video_audio": "english_English_2.wav",
+      "duration_sec": 20.6933125,
+      "expected_language": "English",
+      "detected_language": "Hindi",
+      "language_confidence": 0.95,
+      "language_correct": false,
+      "transcript": "hello there who are you why are you here we are you going the they do you live the you live there then when you come",
+      "word_count": 26,
+      "reference_truth": "hello there what are you why are you here where are you going where do you live when will you come",
+      "elapsed_sec": 29.6
+    },
+    {
+      "video_audio": "hindi_Hindi_1.wav",
+      "duration_sec": 26.958375,
+      "expected_language": "Hindi",
+      "detected_language": "Hindi",
+      "language_confidence": 0.95,
+      "language_correct": true,
+      "transcript": "देखिए दो हज़ार चौदह से पहले केसीआर साहब इलेक्शन ने केसीआर साहब इलेक्शन में वादे किए थे मुसलमानों के ताल्लुक से बहुत बड़े वादे किए थे बहुत बड़े वादे किए थे मगर दो हज़ार चौदह के बाद उन्हें वह उन्हें वो वादों को निभाने के बजाय उल्टा जो उल्टा जो मुसलमानों के अहसास से थे जैसे माइनॉरिटी इंजीनियरिंग और माइनॉरिटी इंजीनियरिंग कॉलेज जैसे मसाजिद है और उर्दू लाभ लिया और उर्दू लाइब्रेरी से कंप्यूटर ट्रेनिंग सेंटर से ये सारे चीजों को बंद [unk] ये सारे चीजों को बंद करना शुरू करें",
+      "word_count": 91,
+      "reference_truth": "देखिए दो हज़ार चौदह से पहले केसीआर साहब इलेक्शन में वादे किए थे मुसलमानों के ताल्लुक से बहुत बड़े बड़े वादे किए थे मगर दो हज़ार चौदह के बाद उन्हें वो वादों को निभाने की बजाय उल्टा जो मुसलमानों के अहसास से थे जैसे माइनॉरिटी इंजीनियरिंग कॉलेज जैसे मसाज जीत है और उर्दू लाइब्रेरी से कंप्यूटर ट्रेनिंग सेंटर से ये सारे चीजों को बंद करना शुरू करें",
+      "elapsed_sec": 50.77
+    },
+    {
+      "video_audio": "hindi_Hindi_2.wav",
+      "duration_sec": 10.0295625,
+      "expected_language": "Hindi",
+      "detected_language": "Telugu",
+      "language_confidence": 0.94,
+      "language_correct": false,
+      "transcript": "[unk] रवैया मस्जिदें यादव आज करेंगे जिसकी वे आगे ले लो इनेलो ने हटाना पड़ा मुझे ने आसानी से लड़ा रहे",
+      "word_count": 21,
+      "reference_truth": "रवैया मस्जिदें यादव आज करेंगे जिसकी वे आगे ले लो इन्हें हटाना पदार्थो जैसे लड़ा रहे",
+      "elapsed_sec": 40.5
+    },
+    {
+      "video_audio": "telugu_Telugu_1.wav",
+      "duration_sec": 24.384,
+      "expected_language": "Telugu",
+      "detected_language": "Telugu",
+      "language_confidence": 0.94,
+      "language_correct": true,
+      "transcript": "ఒకటి నేడు వాయిస్",
+      "word_count": 3,
+      "reference_truth": "హలో నేను సాద్ మీరు ఎవరు మీ పేరు ఏమిటి",
+      "elapsed_sec": 31.3
+    },
+    {
+      "video_audio": "telugu_Telugu_2.wav",
+      "duration_sec": 17.7706875,
+      "expected_language": "Telugu",
+      "detected_language": "Hindi",
+      "language_confidence": 0.95,
+      "language_correct": false,
+      "transcript": "",
+      "word_count": 0,
+      "reference_truth": "హలో నేను సాద్ మీరు ఎవరు మీ పేరు ఏమిటి",
+      "elapsed_sec": 26.99
+    },
+    {
+      "video_audio": "telugu_Telugu_3.wav",
+      "duration_sec": 15.9786875,
+      "expected_language": "Telugu",
+      "detected_language": "Hindi",
+      "language_confidence": 0.95,
+      "language_correct": false,
+      "transcript": "వాయిస్",
+      "word_count": 1,
+      "reference_truth": "నేను ఈరోజు కాలేజీకి వెళ్తున్నాను ఎందుకంటే ప్రాజెక్ట్ సమర్పించాలి",
+      "elapsed_sec": 34.56
+    }
+  ]
+}
