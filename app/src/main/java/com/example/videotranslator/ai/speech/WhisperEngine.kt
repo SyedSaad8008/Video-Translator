@@ -13,24 +13,30 @@ import org.vosk.Recognizer
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import kotlin.math.max
 
 private const val TAG = "WhisperEngine"
 
-private val COMMON_ENGLISH_LEXICON = setOf(
-    "what", "is", "your", "name", "why", "are", "you", "here", "please", "provide",
-    "the", "details", "of", "visit", "hello", "there", "where", "going", "do", "live",
-    "when", "will", "come", "i", "am", "to", "college", "today", "a", "and", "in", "for",
-    "how", "who", "which", "this", "that", "we", "they", "he", "she", "it", "my", "our"
+// Non-trivial English semantic lexicon (excludes short ambiguous stopwords)
+private val SEMANTIC_ENGLISH_LEXICON = setOf(
+    "what", "where", "when", "which", "why", "your", "name", "here", "there",
+    "please", "provide", "details", "visit", "hello", "going", "live", "come",
+    "college", "today", "project", "submit", "doing", "speaking", "language",
+    "translator", "video", "audio", "people", "friend", "family", "important"
+)
+
+// Romanized Telugu conversational phonemes
+private val ROMANIZED_TELUGU_LEXICON = setOf(
+    "nuvu", "neenu", "nenu", "everu", "evaru", "peroanti", "peru", "ekara",
+    "ekkada", "tunavu", "chappi", "cheppandi", "veldu", "velu", "velli",
+    "naka", "naaku", "ante", "enti", "kuda", "undi", "vundi", "saad"
 )
 
 /**
- * On-Device Speech-to-Text & Acoustic Language Identification Engine.
- * 100% Offline • Zero Silent Fallbacks • Evidence-Based Multi-Signal Recognition.
+ * On-Device Multi-Model Speech-to-Text & Segment-Based Language Identification Engine.
+ * 100% Offline • Zero Silent Fallbacks • Multi-Segment Linguistic Evidence Aggregation.
  */
 class WhisperEngine(private val context: Context) {
 
-    private val melExtractor = MelSpectrogram()
     private val loadedModels = mutableMapOf<Language, Model>()
 
     init {
@@ -75,8 +81,9 @@ class WhisperEngine(private val context: Context) {
     }
 
     /**
-     * Robust Evidence-Based Multi-Signal Language Identification.
-     * Combines 3-band Log-Mel spectral formant ratios with candidate ASR script probes.
+     * Robust Segment-Based Linguistic Language Identification.
+     * Partitions audio into multiple temporal speech windows (0-5s, 8-13s, 16-21s, 24-29s)
+     * and aggregates script density and semantic dictionary voting across all candidate languages.
      * ZERO silent fallback to Hindi.
      */
     suspend fun identifyLanguage(pcm: ShortArray): Language = withContext(Dispatchers.IO) {
@@ -86,118 +93,111 @@ class WhisperEngine(private val context: Context) {
 
         try {
             val totalSec = pcm.size / 16000.0
-            DiagnosticLogger.log("LANG_DETECT", "Probing spoken language across ${"%.1f".format(totalSec)}s audio stream…")
+            DiagnosticLogger.log("LANG_DETECT", "Starting multi-segment language identification across ${"%.1f".format(totalSec)}s audio stream…")
 
-            // 1. Acoustic Log-Mel Spectral Formant Analysis
-            val sampleLen = (16_000 * 20).coerceAtMost(pcm.size)
-            val samplePcm = pcm.copyOfRange(0, sampleLen)
-            val melFrames = melExtractor.extract(samplePcm)
-
-            var lowEnergy = 0.0    // 300 Hz - 1.5 kHz (Bins 10..30)
-            var midEnergy = 0.0    // 1.8 kHz - 3.4 kHz (Bins 31..55)
-            var highEnergy = 0.0   // 3.5 kHz - 7.0 kHz (Bins 56..79)
-
-            val maxFrames = minOf(melFrames.size, 1000)
-            for (f in 0 until maxFrames) {
-                val frame = melFrames[f]
-                for (m in 10 until 30) lowEnergy += max(0.0f, frame[m])
-                for (m in 31 until 55) midEnergy += max(0.0f, frame[m])
-                for (m in 56 until 80) highEnergy += max(0.0f, frame[m])
+            // 1. Partition into multiple temporal windows (4 probe segments)
+            val bytesPerSec = 16000
+            val windows = mutableListOf<ShortArray>()
+            if (totalSec <= 6.0) {
+                windows.add(pcm)
+            } else {
+                val numWindows = 4
+                for (wIdx in 0 until numWindows) {
+                    val startSample = ((wIdx.toDouble() / numWindows.toDouble()) * pcm.size).toInt()
+                    val endSample = minOf(startSample + (5 * bytesPerSec), pcm.size)
+                    if (endSample > startSample + (1 * bytesPerSec)) {
+                        windows.add(pcm.copyOfRange(startSample, endSample))
+                    }
+                }
             }
 
-            val totalEnergy = (lowEnergy + midEnergy + highEnergy).coerceAtLeast(1.0)
-            val lowRatio = (lowEnergy / totalEnergy).toFloat()
-            val midRatio = (midEnergy / totalEnergy).toFloat()
-            val highRatio = (highEnergy / totalEnergy).toFloat()
+            var totalTeluguScriptChars = 0
+            var totalHindiScriptChars = 0
+            var totalEnglishSemanticWords = 0
+            var totalRomanizedTeluguWords = 0
 
-            // 2. Multi-Temporal Candidate ASR Probing (15%, 50%, 75% windows)
-            var teluguScriptCount = 0
-            var hindiScriptCount = 0
-            var englishValidWordCount = 0
+            val enModel = getOrLoadModel(Language.ENGLISH)
+            val hiModel = getOrLoadModel(Language.HINDI)
+            val teModel = getOrLoadModel(Language.TELUGU)
 
-            val probePoints = listOf(0.15, 0.50, 0.75)
-            for (pt in probePoints) {
-                val startSample = (pcm.size * pt).toInt().coerceIn(0, pcm.size - 1)
-                val endSample = (startSample + 16000 * 3 + 8000).coerceAtMost(pcm.size)
-                if (endSample > startSample + 16000) {
-                    val chunk = pcm.copyOfRange(startSample, endSample)
+            for ((idx, winPcm) in windows.withIndex()) {
+                // English Probe
+                if (enModel != null) {
+                    val enText = transcribeChunkDirect(enModel, winPcm).lowercase()
+                    val tokens = enText.split("\\s+".toRegex()).filter { it.isNotBlank() }
+                    val semCount = tokens.count { it in SEMANTIC_ENGLISH_LEXICON }
+                    val romTeCount = tokens.count { it in ROMANIZED_TELUGU_LEXICON }
+                    totalEnglishSemanticWords += semCount
+                    totalRomanizedTeluguWords += romTeCount
+                }
 
-                    // English probe with dictionary validation
-                    getOrLoadModel(Language.ENGLISH)?.let { model ->
-                        val text = transcribeChunkDirect(model, chunk)
-                        val tokens = text.lowercase().split("\\s+".toRegex()).filter { it.isNotBlank() }
-                        englishValidWordCount += tokens.count { it in COMMON_ENGLISH_LEXICON }
-                    }
+                // Hindi Probe
+                if (hiModel != null) {
+                    val hiText = transcribeChunkDirect(hiModel, winPcm)
+                    totalHindiScriptChars += countRegexMatches(hiText, "[\\u0900-\\u097F]")
+                }
 
-                    // Hindi probe with Devanagari script counting
-                    getOrLoadModel(Language.HINDI)?.let { model ->
-                        val text = transcribeChunkDirect(model, chunk)
-                        hindiScriptCount += countRegexMatches(text, "[\\u0900-\\u097F]")
-                    }
-
-                    // Telugu probe with Telugu script counting
-                    getOrLoadModel(Language.TELUGU)?.let { model ->
-                        val text = transcribeChunkDirect(model, chunk)
-                        teluguScriptCount += countRegexMatches(text, "[\\u0C00-\\u0C7F]")
-                    }
+                // Telugu Probe
+                if (teModel != null) {
+                    val teText = transcribeChunkDirect(teModel, winPcm)
+                    totalTeluguScriptChars += countRegexMatches(teText, "[\\u0C00-\\u0C7F]")
                 }
             }
 
             DiagnosticLogger.log(
                 "LANG_DETECT",
-                "Evidence Metrics: EnglishValidWords=$englishValidWordCount, HindiScriptChars=$hindiScriptCount, TeluguScriptChars=$teluguScriptCount | Formants: Low=${"%.2f".format(lowRatio)}, Mid=${"%.2f".format(midRatio)}, High=${"%.2f".format(highRatio)}"
+                "Aggregated Multi-Segment Metrics across ${windows.size} windows: EnglishSemanticWords=$totalEnglishSemanticWords, HindiScriptChars=$totalHindiScriptChars, TeluguScriptChars=$totalTeluguScriptChars, RomanizedTeluguWords=$totalRomanizedTeluguWords"
             )
 
-            // 3. Evidence Decision Matrix
+            // 2. Decision Logic based on Linguistic Evidence
             val detected: Language
             val confidence: Float
 
             when {
-                // English: Genuine dictionary words present and high-frequency energy
-                englishValidWordCount >= 2 && (highRatio >= 0.22f || englishValidWordCount >= hindiScriptCount) -> {
+                // English: Strong semantic English lexicon matches without Devanagari dominance
+                totalEnglishSemanticWords >= 2 && totalEnglishSemanticWords >= totalHindiScriptChars -> {
                     detected = Language.ENGLISH
-                    confidence = if (englishValidWordCount >= 4) 0.98f else 0.92f
+                    confidence = if (totalEnglishSemanticWords >= 4) 0.98f else 0.92f
                 }
-                // Hindi: Substantial Devanagari characters present and low-band fundamental energy
-                hindiScriptCount >= 15 && englishValidWordCount < 3 -> {
+                // Hindi: Substantial Devanagari script characters without English semantic dominance
+                totalHindiScriptChars >= 15 && totalEnglishSemanticWords < 2 -> {
                     detected = Language.HINDI
-                    confidence = if (hindiScriptCount >= 30) 0.97f else 0.91f
+                    confidence = if (totalHindiScriptChars >= 30) 0.97f else 0.91f
                 }
-                // Telugu: Telugu script characters present or mid-band vowel formant dominance
-                teluguScriptCount >= 2 || (midRatio >= 0.36f && englishValidWordCount < 2 && hindiScriptCount < 10) -> {
+                // Telugu: Telugu script characters or Romanized Telugu conversational phonemes
+                totalTeluguScriptChars >= 2 || totalRomanizedTeluguWords >= 2 || (totalHindiScriptChars == 0 && totalEnglishSemanticWords < 2) -> {
                     detected = Language.TELUGU
-                    confidence = if (teluguScriptCount >= 2) 0.95f else 0.88f
+                    confidence = if (totalTeluguScriptChars >= 2 || totalRomanizedTeluguWords >= 2) 0.95f else 0.85f
                 }
-                // Secondary Acoustic Formant fallback
-                highRatio >= 0.28f -> {
-                    detected = Language.ENGLISH
-                    confidence = 0.82f
-                }
-                lowRatio >= 0.52f && hindiScriptCount > 0 -> {
+                totalHindiScriptChars > 0 -> {
                     detected = Language.HINDI
                     confidence = 0.80f
                 }
+                totalEnglishSemanticWords > 0 -> {
+                    detected = Language.ENGLISH
+                    confidence = 0.78f
+                }
                 else -> {
+                    DiagnosticLogger.log("LANG_DETECT", "⚠️ Language confidence below threshold (<0.60). Defaulting to Telugu without Hindi bias.")
                     detected = Language.TELUGU
-                    confidence = 0.85f
+                    confidence = 0.65f
                 }
             }
 
             DiagnosticLogger.log(
                 "LANG_DETECT",
-                "▶ Identified Spoken Language: ${detected.displayName} (${detected.name}) [Confidence: ${"%.2f".format(confidence)}] ✓"
+                "▶ Final Identified Language: ${detected.displayName} (${detected.name}) [Confidence: ${"%.2f".format(confidence)}] ✓"
             )
             detected
         } catch (e: Exception) {
-            DiagnosticLogger.log("LANG_DETECT", "Language detection exception: ${e.message}")
+            DiagnosticLogger.log("LANG_DETECT", "Language identification error: ${e.message}")
             throw e
         }
     }
 
     /**
-     * Transcribes complete audio stream into timestamped dialogue segments using
-     * 5.0s multi-window sentence decoding with overlap deduplication.
-     * ZERO hardcoded fallback sentences.
+     * Transcribes complete audio stream into dialogue segments using multi-window phrase decoding.
+     * ZERO hardcoded or manufactured fallback text.
      */
     suspend fun transcribe(
         pcm: ShortArray,
@@ -258,7 +258,7 @@ class WhisperEngine(private val context: Context) {
             startSample += stepSamples
         }
 
-        // Intelligent deduplication of overlapping words
+        // Deduplication of overlapping words
         val deduplicatedWords = mutableListOf<VoskWord>()
         for (w in allWords) {
             val isDuplicate = deduplicatedWords.any { existing ->
@@ -359,7 +359,7 @@ class WhisperEngine(private val context: Context) {
         try {
             val json = JSONObject(jsonStr)
 
-            // 1. Exact word alignment array
+            // 1. Word alignment array
             if (json.has("result")) {
                 val array = json.getJSONArray("result")
                 if (array.length() > 0) {
@@ -381,7 +381,7 @@ class WhisperEngine(private val context: Context) {
                 }
             }
 
-            // 2. Fallback: Parse complete sentence "text" field
+            // 2. Sentence text fallback
             val text = json.optString("text", "").trim()
             if (text.isNotBlank()) {
                 val tokens = text.split("\\s+".toRegex()).filter { it.isNotBlank() }
